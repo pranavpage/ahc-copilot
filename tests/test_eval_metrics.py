@@ -89,9 +89,9 @@ def test_fake_q1_passes_other_case_fails(monkeypatch, tmp_path):
     assert "missing: WELL-0164" in res.failure_message()
     records = [json.loads(line) for line in log.read_text().splitlines()]
     assert [rec["case_id"] for rec in records] == ["Q1", "Q2"]
-    assert records[0]["passed"] and records[0]["model"] == "fake"
-    assert records[0]["metrics"]["FactRecall"]["score"] == 1.0
-    assert records[0]["tool_calls"][0][0]["name"] == "well_status"
+    assert records[0]["status"] == "PASS" and records[0]["model"] == "fake"
+    assert records[0]["metrics"][0]["name"] == "FactRecall" and records[0]["metrics"][0]["score"] == 1.0
+    assert records[0]["tool_calls"][0]["name"] == "well_status"
 
 
 class Recorder:

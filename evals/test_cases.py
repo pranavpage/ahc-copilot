@@ -7,8 +7,14 @@ Offline: EVAL_ASK=evals.fake:ask uv run pytest evals
 
 import pytest
 
+from evals.report import failure_block
+from evals.schema import Status
+
 
 def test_case(case, runner):
     res = runner.result(case.id)
-    if not res.passed:
-        pytest.fail(res.failure_message(), pytrace=False)
+    status = res.status
+    if status == Status.FAIL:
+        pytest.fail(failure_block(res.record()), pytrace=False)
+    if status == Status.ERROR:
+        pytest.fail("ERROR: " + failure_block(res.record()), pytrace=False)
