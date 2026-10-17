@@ -8,7 +8,7 @@ import json
 from datetime import date
 
 from copilot import db, results
-from copilot.tools.base import ToolResult
+from copilot.tools.base import ToolResult, correction_details, correction_note, user_rule_cite
 
 MAX_ROWS = 200
 
@@ -71,18 +71,24 @@ def _correction_ids(value: str | None) -> list[str]:
 
 
 def _rule_citations(asset_ids: list[str], rule_keys: list[str]) -> list[str]:
-    """'<doc_id> § <section_path>' for the rules that apply to these wells."""
+    """'<doc_id> § <section_path>' for the document rules that apply to these wells, and
+    'user rule N by <name>' for the user rules."""
     found = db.rows(
         """
-        SELECT DISTINCT doc_id, section_path FROM well_rules
+        SELECT DISTINCT doc_id, section_path, rule_id, source, author_user_id FROM well_rules
         WHERE asset_id IN (SELECT value FROM json_each(:ids))
           AND rule_key IN (SELECT value FROM json_each(:keys))
-          AND doc_id IS NOT NULL
-        ORDER BY doc_id, section_path
+        ORDER BY source, doc_id, section_path, rule_id
         """,
         {"ids": json.dumps(asset_ids), "keys": json.dumps(rule_keys)},
     )
-    return [f"{r['doc_id']} § {r['section_path']}" if r["section_path"] else r["doc_id"] for r in found]
+    out = []
+    for r in found:
+        if r["source"] == "user":
+            out.append(user_rule_cite(r["rule_id"], r["author_user_id"]))
+        elif r["doc_id"]:
+            out.append(f"{r['doc_id']} § {r['section_path']}" if r["section_path"] else r["doc_id"])
+    return list(dict.fromkeys(out))
 
 
 def _num(value: float) -> str:
@@ -103,8 +109,10 @@ def well_status(
     """Current status of wells, from each well's latest inspection.
 
     Per well: producing yes/no, °C above air vs. the threshold, the last inspection (ID, date,
-    inspector, method), the recorded status and whether it is out of date, open repairs and
-    valid notes that explain a stop. Filter by wells, by area, or to wells not producing.
+    inspector, method), the recorded status and whether it is out of date, open repairs, notes
+    valid now (`current_notes`: dataset notes and what users told the copilot, with claim status)
+    and planned ones (`upcoming_notes`), and who corrected the reading (`corrections`).
+    Filter by wells, by area, or to wells not producing; notes name wells left out by a correction.
     """
     kind = "well_status"
     notes: list[str] = []
@@ -158,19 +166,24 @@ def well_status(
         repairs.setdefault(m.pop("asset_id"), []).append(m)
 
     current: dict[str, list[dict]] = {}
+    upcoming: dict[str, list[dict]] = {}
     for n in db.rows(
         """
-        SELECT n.asset_id, n.note_id, u.name AS author_name, n.text, n.valid_from, n.valid_to
+        SELECT n.asset_id, n.note_id, n.source, u.name AS author_name, substr(n.created_at, 1, 10) AS date,
+               n.text, n.valid_from, n.valid_to, n.claim_status
         FROM notes n
         LEFT JOIN users u ON u.user_id = n.author_user_id
         WHERE n.asset_id IN (SELECT value FROM json_each(:ids))
           AND n.note_type != 'correction'
-          AND n.valid_from <= :today AND :today <= coalesce(n.valid_to, :today)
+          AND coalesce(n.claim_status, '') != 'retracted'
+          AND :today <= coalesce(n.valid_to, :today)
         ORDER BY n.asset_id, n.valid_from, n.note_id
         """,
         p,
     ):
-        current.setdefault(n.pop("asset_id"), []).append(n)
+        if not n["claim_status"]:
+            n.pop("claim_status")
+        (current if n["valid_from"] <= today else upcoming).setdefault(n.pop("asset_id"), []).append(n)
 
     rows, ids = [], []
     for r in found:
@@ -186,6 +199,14 @@ def well_status(
             "open_repairs": repairs.get(a, []),
             "current_notes": current.get(a, []),
         }
+        if upcoming.get(a):
+            row["upcoming_notes"] = upcoming[a]
+        if row["correction_ids"]:
+            row["corrections"] = correction_details(row["correction_ids"])
+            notes += [f"{a}: {correction_note(c)}" for c in row["corrections"]]
+        for n in current.get(a, []) + upcoming.get(a, []):
+            if n.get("claim_status") == "unconfirmed":
+                notes.append(f"{a}: unconfirmed claim {n['note_id']} by {n['author_name']}: '{n['text']}'")
         if row["is_producing"] is None:
             notes.append(f"{a}: no producing rule found")
         elif not row["is_producing"] and not row["open_repairs"] and not row["current_notes"]:
@@ -194,12 +215,32 @@ def well_status(
         rows.append(row)
         ids += [row["inspection_id"], *row["correction_ids"]]
         ids += [m["maintenance_id"] for m in row["open_repairs"]]
-        ids += [n["note_id"] for n in row["current_notes"]]
+        ids += [n["note_id"] for n in row["current_notes"] + row.get("upcoming_notes", [])]
 
+    if not_producing_only:
+        notes += _left_out_by_corrections(where[:-1], params)
     if not rows and not notes:
         notes.append("no wells match")
     ids += _rule_citations(wells, [PRODUCING_RULE])
     return _result(kind, rows, ids, notes, truncated)
+
+
+def _left_out_by_corrections(where: list[str], params: dict) -> list[str]:
+    """Notes for wells that the recorded reading shows not producing, but a correction shows producing."""
+    found = db.rows(
+        f"""
+        SELECT s.asset_id, s.inspection_id, s.correction_ids
+        FROM well_status_now s JOIN inspections_effective e ON e.inspection_id = s.inspection_id
+        WHERE s.is_producing AND s.correction_ids IS NOT NULL
+          AND (e.raw_wellhead_temp_c - e.raw_ambient_temp_c) < e.producing_threshold_c
+          {"AND " + " AND ".join(where) if where else ""}
+        ORDER BY s.asset_id
+        """,
+        params,
+    )
+    return [f"{r['asset_id']} left out: producing after a correction, though the recorded reading says not "
+            f"producing; " + "; ".join(map(correction_note, correction_details(_correction_ids(r["correction_ids"]))))
+            for r in found]
 
 
 def inspection_series(asset_id: str, start: str, end: str) -> ToolResult:
@@ -231,6 +272,9 @@ def inspection_series(asset_id: str, start: str, end: str) -> ToolResult:
     for r in found:
         row = {
             **r,
+            # A correction can come back as an integer (SQLite NUMERIC): 41 -> 41.0.
+            "wellhead_temp_c": None if r["wellhead_temp_c"] is None else float(r["wellhead_temp_c"]),
+            "ambient_temp_c": None if r["ambient_temp_c"] is None else float(r["ambient_temp_c"]),
             "temp_delta_c": None if r["temp_delta_c"] is None else round(r["temp_delta_c"], 1),
             "is_producing": None if r["is_producing"] is None else bool(r["is_producing"]),
             "spill_detected": bool(r["spill_detected"]),
@@ -239,6 +283,7 @@ def inspection_series(asset_id: str, start: str, end: str) -> ToolResult:
         rows.append(row)
         ids += [row["inspection_id"], *row["correction_ids"]]
 
+    notes += [correction_note(c) for c in correction_details([c for r in rows for c in r["correction_ids"]])]
     if not rows:
         notes.append(f"no inspections of {asset_id} between {start} and {end}")
     elif any(r["is_producing"] is None for r in rows):

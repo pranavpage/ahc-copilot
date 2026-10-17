@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 from typing import Literal
 
 from copilot import db, results
-from copilot.tools.base import ToolResult
+from copilot.tools.base import ToolResult, correction_details, correction_note, user_rule_cite
 
 MAX_ROWS = 200
 
@@ -70,7 +70,7 @@ def _cite(rule: dict) -> str:
     """Citation for a well_rules row: `<doc_id> §<section_path>`, or the user rule."""
     if rule.get("doc_id"):
         return f"{rule['doc_id']} §{rule['section_path']}"
-    return f"user rule {rule['rule_id']}"
+    return user_rule_cite(rule["rule_id"], rule.get("author_user_id"))
 
 
 def _well_rules(asset_id: str) -> dict[str, dict]:
@@ -105,8 +105,9 @@ def spills(
     """Real spills (after corrections) discovered between start and end (inclusive).
 
     Per spill: inspection ID, well, area, lat/lon, date, volume (bbl), class from the Spill
-    Response SOP, reportable yes/no, the repair and report, containment hours vs. the limit.
-    Filter by well or area. Notes list detections that corrections cancelled.
+    Response SOP, reportable yes/no (with the spill report filed, or when it was due), the repair
+    and report, containment hours vs. the limit, and who corrected the detection (`corrections`).
+    Filter by well or area. Notes list detections that corrections cancelled and missing reports.
     `group_by` (any of "area", "month", "asset_id", "spill_class") returns one row per group
     with spill_count and total_bbl instead, e.g. ["area", "month"] for a heatmap.
 
@@ -140,7 +141,12 @@ def spills(
                s.spill_class, s.is_reportable,
                s.maintenance_id, s.report_path, s.containment_hours,
                lim.value AS containment_limit_hours, lim.doc_id, lim.section_path, lim.rule_id,
-               s.correction_ids
+               lim.author_user_id, s.correction_ids, s.inspected_at,
+               (SELECT ev.event_id FROM regulatory_events ev WHERE ev.event_type = 'spill_report_filed'
+                  AND ev.related_inspection_id = s.inspection_id ORDER BY ev.date LIMIT 1) AS report_event_id,
+               (SELECT value FROM well_rules n WHERE n.asset_id = s.asset_id AND n.rule_key =
+                  CASE WHEN s.spill_class = 'major' THEN 'spill_notice_hours_major' ELSE 'spill_notice_hours' END)
+                  AS notice_hours
         FROM spills s
         JOIN wells w ON w.asset_id = s.asset_id
         LEFT JOIN areas a ON a.area_id = s.area_id
@@ -171,8 +177,19 @@ def spills(
             "contained_in_time": None if hours is None or limit is None else hours <= limit,
             "correction_ids": correction_ids,
         }
+        if r["is_reportable"]:
+            row["spill_report"] = r["report_event_id"]
+            if not r["report_event_id"] and r["notice_hours"] is not None:
+                due = datetime.fromisoformat(r["inspected_at"].replace("Z", "+00:00")) + timedelta(hours=r["notice_hours"])
+                row["spill_report_due"] = due.date().isoformat()
+                overdue = row["spill_report_due"] < db.today()
+                notes.append(f"{r['inspection_id']} ({r['asset_id']}): reportable, no spill report filed; due "
+                             f"{row['spill_report_due']} ({_num(r['notice_hours'])} h){', overdue' if overdue else ''}")
+        if correction_ids:
+            row["corrections"] = correction_details(correction_ids)
+            notes += [correction_note(c) for c in row["corrections"]]
         rows.append(row)
-        ids += [r["inspection_id"], r["maintenance_id"], *correction_ids]
+        ids += [r["inspection_id"], r["maintenance_id"], r["report_event_id"], *correction_ids]
     if any(r["containment_limit_hours"] is None for r in found):
         notes.append("no rule found: containment_max_hours (for some wells)")
 
@@ -263,9 +280,10 @@ def well_records(asset_id: str, start: str, end: str) -> ToolResult:
         WHERE asset_id = :a AND (date BETWEEN :start AND :end OR status = 'open')
         ORDER BY date, event_id""", p)
     well_notes = db.rows("""
-        SELECT note_id, substr(created_at, 1, 10) AS date, source, created_at, author_user_id,
-               note_type, inspection_id, text, valid_from, valid_to, claim_status
-        FROM notes
+        SELECT n.note_id, substr(n.created_at, 1, 10) AS date, n.source, n.created_at, n.author_user_id,
+               u.name AS author_name, n.note_type, n.inspection_id, n.text, n.valid_from, n.valid_to,
+               n.claim_status
+        FROM notes n LEFT JOIN users u ON u.user_id = n.author_user_id
         WHERE asset_id = :a AND COALESCE(claim_status, '') <> 'retracted'
           AND (substr(created_at, 1, 10) BETWEEN :start AND :end
                OR (COALESCE(valid_from, substr(created_at, 1, 10)) <= :end
@@ -421,7 +439,7 @@ def _findings(asset_id: str, start: str, end: str, today: str,
                 "rule": "RCA", "status": "open" if n >= limit else "met", "date": ms[-1]["d"],
                 "cite": _cite(r_count), "ids": [m["maintenance_id"] for m in ms],
                 "detail": f"{n} corrective {kind_} repair(s) from {since} to {today} "
-                          f"(RCA required at {_num(limit)}; {r_count['source']} rule)",
+                          f"(RCA required at {_num(limit)}; {_cite(r_count)})",
             })
 
     # RC-02: a scheduled flowline integrity test in each calendar year of the window.

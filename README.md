@@ -100,6 +100,16 @@ area / record IDs that the answer named, in order. In a later chat, `recall_conv
 this index for the current user only ("the three wells we discussed yesterday"). The user ID comes
 from the run config, never from the model.
 
+**Shared knowledge and feedback.** What a user tells the copilot is saved for every user, with the
+author and the reason. The original values stay as they are:
+- `record_correction`: a wrong inspection value ("the wellhead was 41.0 °C", "the spill was 5.4 bbl").
+  It is saved in `corrections`. The views apply it, so the producing check, downtime, the spill class
+  and the reporting duties all change.
+- `add_note`: a fact or plan about a well. It is saved in `notes`. A claim that the well is or is not
+  producing is checked against the latest inspection and kept as `consistent` or `unconfirmed`.
+- `set_rule`: a threshold for one well, one well type or all wells. It is saved in `rules`. It wins
+  over the manual, but only within that scope.
+
 Users (`--user`): U-201 Michael Turner (production supervisor, the default), U-202 Jessica Reed
 (inspector), U-102 Jake Morales (operator), U-301 Robert Hayes (maintenance lead), U-401 Laura Simmons
 (HSE officer). All users: `sqlite3 data/copilot.db "select * from users"`.

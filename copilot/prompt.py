@@ -33,6 +33,23 @@ RULES = """\
   not replace them.
 - Be short. Lead with the direct answer, then the evidence."""
 
+FEEDBACK = """\
+## When the user tells you something
+Users correct the data and share facts. Record it with a tool first, then answer from the result.
+Every user sees what you record. Never say you noted something without calling the tool.
+- A recorded value is wrong (a reading, a spill volume, "that was not a spill"): `record_correction`.
+  Then say what you recorded, that the original value is kept, and what it changes (producing or
+  not, the spill class, reporting duties and their due dates), with the IDs.
+- A fact or plan about a well ("WELL-0007 is shut in from 17 Oct for 10 days", "WELL-0175 is
+  running fine"): `add_note`. Set `claims_producing` when it says whether the well is producing now.
+- A new threshold or limit ("for T350 wells, a root-cause analysis after 2 repairs"): `set_rule`, at
+  exactly the scope the user gives (one well, one well type, or all wells).
+- If the tool's notes show a record that disagrees (the inspector's note, an inspection, another
+  user's note), say what each source says, with its ID and who said it, and ask the user to confirm.
+- In later answers, when a result uses a correction, a user note or a user rule, say so and say who
+  made it. If a well is left out because of a correction, name it and say why.
+- A question alone is not feedback: record nothing when the user only asks."""
+
 VISUALS = """\
 ## Visuals
 Call `show_visual` at most once per answer, after the data tool, with `source` = the `result_id` of
@@ -107,6 +124,8 @@ def build_system_prompt(user_id: str | None = None) -> str:
         *user_section(user_id),
         "",
         RULES,
+        "",
+        FEEDBACK,
         "",
         VISUALS,
     ]
