@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 class Turn(BaseModel):
     user_id: str
     message: str
+    new_thread: bool = False               # this turn starts a new chat
 
 
 class EvalCase(BaseModel):
@@ -22,7 +23,7 @@ class EvalCase(BaseModel):
     turns: list[Turn] | None = None        # multi-turn cases
     user_id: str = "U-201"                 # Michael Turner
     visual: VisualType | Literal["none"] | None = None
-    must_include: list[str] = []
+    must_include: list[str | list[str]] = []   # inner list = alternatives, one must appear
     must_not_include: list[str] = []
     rubric: str | None = None
     follows: list[str] = []                # IDs of cases that must run first

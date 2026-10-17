@@ -1,9 +1,340 @@
 # Eval cases. Format: evals/cases.py (EvalCase). Owner: B.
+# Source: flytbase-ahc-swe-asset-intelligence-dataset/03-evaluation-queries.md
+#
 # must_include: strings that must appear in the answer or its visual (IDs, numbers, names).
-# Quote numbers so they stay strings.
+#   An inner list = alternatives: one of them must appear (used for dates).
+#   Matched after: lowercase, thousands separators removed, "−" -> "-".
+#   Quote numbers so they stay strings.
+# Multi-turn cases: only the FINAL turn is scored. new_thread: true = the turn starts a new chat.
+# Values are checked against data/copilot.db by tests/test_cases_data.py.
+
+# ---------------------------------------------------------------------------
+# A1. Asking about the data (single turn, user U-201 Michael Turner)
+# ---------------------------------------------------------------------------
 
 - id: Q1
-  question: "Is WELL-0001 producing oil right now? When was it last inspected, and by whom?"
+  question: "Is WELL-0001 producing oil right now? When was it last inspected, and by whom? Show me its status card."
   visual: status_card
-  must_include: [INS-0001-0203, "Ryan Brooks", "3.2", CTX-0001-003]
-  rubric: "Says the recorded status 'active' is out of date."
+  must_include:
+    - INS-0001-0203
+    - ["2026-10-15", "15 oct", "oct 15", "october 15"]
+    - "Ryan Brooks"
+    - "3.2"
+    - CTX-0001-003
+    - "Jake Morales"
+    - ["2026-10-20", "20 oct", "oct 20", "october 20"]
+  rubric: "Says WELL-0001 is not producing oil, and that the recorded status 'active' is out of date."
+
+- id: Q2
+  question: "Which wells in Northeast Block 8 are not producing oil right now, and why? Show them in a table."
+  visual: table
+  must_include:
+    - WELL-0164
+    - WELL-0170
+    - WELL-0172
+    - WELL-0175
+    - MNT-0170-031
+    - MNT-0172-028
+    - "4.1"
+    - "2.9"
+    - "5.7"
+    - "0.4"
+    - ["2026-10-15", "15 oct", "oct 15", "october 15"]
+  rubric: "Says WELL-0164 and WELL-0175 have no recorded reason and suggests a check, without inventing a cause. Says the recorded status 'active' is out of date for WELL-0164, WELL-0172 and WELL-0175."
+
+- id: Q3
+  question: "Show a line chart of WELL-0001's wellhead temperature against air temperature for the last 13 weeks, and mark when it was not producing oil."
+  visual: line_chart
+  must_include:
+    - "13"
+    - ["2026-07-23", "23 jul", "jul 23", "july 23"]
+    - ["2026-10-08", "8 oct", "oct 8", "october 8"]
+    - ["2026-10-15", "15 oct", "oct 15", "october 15"]
+  rubric: "Plots both wellhead and air temperature and marks only 8 Oct and 15 Oct as not producing oil."
+
+- id: Q4
+  question: "How many oil spills has WELL-0001 had in the last 4 years, and how much oil in total? List them in a table."
+  visual: table
+  must_include:
+    - "15.1"
+    - "0.5"
+    - "2.6"
+    - "3.3"
+    - "0.3"
+    - "6.8"
+    - "1.6"
+    - INS-0001-0070
+    - CTX-0001-001
+  rubric: "Says 6 spills, and that the 7 Mar 2024 detection was corrected as rainwater and does not count."
+
+- id: Q5
+  question: "How many days was WELL-0001 down in 2025?"
+  visual: "none"
+  must_include:
+    - "21"
+    - ["2025-07-24", "24 jul", "jul 24", "july 24"]
+    - ["2025-10-16", "16 oct", "oct 16", "october 16"]
+    - ["2025-10-23", "23 oct", "oct 23", "october 23"]
+    - "51.6"
+    - "43.1"
+    - "8.5"
+    - MNT-0001-021
+    - MNT-0001-023
+  rubric: "Explains that the 24 Jul 2025 reading looks hot but is too close to the air temperature to count as producing oil."
+
+- id: Q6
+  question: "Which 3 wells in Northeast Block 7 had the most downtime in the last 4 months? Show a bar chart."
+  visual: bar_chart
+  must_include:
+    - WELL-0121
+    - WELL-0138
+    - WELL-0107
+    - "49"
+    - "42"
+  rubric: "Uses the window 16 Jun to 16 Oct 2026 and ranks WELL-0121 first."
+
+- id: Q7
+  question: "Show on a map every well in Northeast Block 8 with a real spill in the last 90 days."
+  visual: map
+  must_include:
+    - WELL-0151
+    - WELL-0165
+    - WELL-0175
+    - WELL-0186
+    - "4.5"
+    - "1.2"
+    - "3.9"
+    - "0.6"
+
+- id: Q8
+  question: "Show a heatmap of 2026 spills by geographic area and month."
+  visual: heatmap
+  must_include:
+    - "Southwest Block 23"
+    - "Southwest Block 24"
+    - "Northeast Block 7"
+    - "Northeast Block 8"
+    - "35"
+    - "43"
+    - "37"
+    - "26"
+  rubric: "Removes corrected detections and says Southwest Block 24 had the most spills."
+
+- id: Q9
+  question: "Which rules has WELL-0001 broken in the last 12 months, and what is still open?"
+  visual: table
+  must_include:
+    - SR-01
+    - SR-02
+    - SR-03
+    - RC-04
+    - REG-0001-001
+    - REG-0001-002
+    - REG-0001-003
+    - "41"
+    - "5000"
+    - "6.8"
+    - ["2026-06-11", "11 jun", "jun 11", "june 11"]
+    - ["2026-08-10", "10 aug", "aug 10", "august 10"]
+    - ["2026-07-30", "30 jul", "jul 30", "july 30"]
+  rubric: "Lists four breaches, all from the 11 Jun 2026 spill, with the fine still open. Lists the flowline root-cause analysis and the unrecorded planned shut-in as pending, not as breaches."
+
+- id: Q10
+  question: "In Southwest Block 24, which spills in the last 90 days were not contained within the SOP time limit?"
+  visual: table
+  must_include:
+    - WELL-0082
+    - WELL-0100
+    - "7.1"
+    - "8.1"
+    - MNT-0082-028
+    - MNT-0100-034
+    - INS-0082-0198
+    - INS-0100-0196
+  rubric: "Says the SOP limit is 4 hours and that the containment times come from the repair reports."
+
+# ---------------------------------------------------------------------------
+# A2. Memory and feedback from one user (multi-turn; the final turn is scored)
+# ---------------------------------------------------------------------------
+
+- id: Q11
+  turns:
+    - user_id: U-201
+      message: "Which 3 wells in Northeast Block 7 had the most downtime in the last 4 months? Show a bar chart."
+    - user_id: U-201
+      new_thread: true
+      message: "For the three wells we discussed yesterday, what have repairs cost this year?"
+  must_include:
+    - WELL-0121
+    - WELL-0138
+    - WELL-0107
+    - "25794"
+    - "46942"
+    - "5176"
+
+- id: Q12a
+  turns:
+    - user_id: U-201
+      message: "The 15 Oct reading for WELL-0164 is wrong. The handheld thermal gun used in that inspection was faulty; the field crew re-measured the wellhead at 41.0 °C."
+  must_include:
+    - INS-0164-0205
+    - "24.0"
+    - "41.0"
+    - "19.9"
+    - "21.1"
+    - "Tyler Hughes"
+  rubric: "Records the correction, keeps the original value, and says WELL-0164 is producing oil. Points out the conflicting \"Pump jack not moving.\" note and asks Michael Turner to confirm."
+
+- id: Q12b
+  follows: [Q12a]
+  turns:
+    - user_id: U-201
+      message: "Which wells in Northeast Block 8 are not producing oil right now, and why? Show them in a table."
+  visual: table
+  must_include:
+    - WELL-0170
+    - WELL-0172
+    - WELL-0175
+    - MNT-0170-031
+    - MNT-0172-028
+  rubric: "Lists three wells, not WELL-0164, and says WELL-0164 is left out because of Michael Turner's corrected reading."
+
+- id: Q13
+  turns:
+    - user_id: U-201
+      message: "The AI estimated the 24 Sep spill at WELL-0151 as 4.5 bbl. The field crew measured 5.4 bbl."
+  must_include:
+    - INS-0151-0201
+    - MNT-0151-025
+    - SR-01
+    - SR-02
+    - SR-03
+    - "5.4"
+    - "4.5"
+    - "6.4"
+    - ["2026-11-23", "23 nov", "nov 23", "november 23"]
+  rubric: "Says the spill is now reportable, no written notice is recorded, and flags a possible SR-01 breach. Says the repair report's 'moderate' class was based on the old estimate and no longer holds."
+
+- id: Q14a
+  turns:
+    - user_id: U-201
+      message: "Which wells in Northeast Block 7 need a root-cause analysis on their pump jack?"
+  visual: table
+  must_include:
+    - WELL-0108
+    - WELL-0121
+    - WELL-0138
+  rubric: "Applies the rule of 3 corrective pump jack repairs in 12 months from the T200 manual (section 10)."
+
+- id: Q14b
+  follows: [Q14a]
+  turns:
+    - user_id: U-201
+      message: "Note for all T350 wells: our team now wants a pump jack root-cause analysis after 2 repairs, not 3."
+    - user_id: U-201
+      new_thread: true
+      message: "Which wells in Northeast Block 7 need a root-cause analysis on their pump jack?"
+  visual: table
+  must_include:
+    - WELL-0108
+    - WELL-0120
+    - WELL-0121
+    - WELL-0138
+    - "Michael Turner"
+  must_not_include:
+    - WELL-0102
+  rubric: "Says WELL-0120 is added because of Michael Turner's rule for T350 wells, not the manual."
+
+# ---------------------------------------------------------------------------
+# B. Several users. A turn by a different user always starts a new chat.
+# ---------------------------------------------------------------------------
+
+- id: Q15a
+  follows: [Q12a]
+  turns:
+    - user_id: U-202
+      new_thread: true
+      message: "Is WELL-0164 producing oil right now?"
+  visual: status_card
+  must_include:
+    - INS-0164-0205
+    - "41.0"
+    - "Michael Turner"
+  rubric: "Says yes, based on the corrected reading, and mentions the inspector's \"Pump jack not moving.\" note that disagrees with it."
+
+- id: Q15b
+  follows: [Q13]
+  turns:
+    - user_id: U-401
+      new_thread: true
+      message: "Which spills in Northeast Block 8 in the last 90 days needed a report to the regulator?"
+  visual: table
+  must_include:
+    - WELL-0151
+    - "5.4"
+  rubric: "Flags the missing written notice for WELL-0151 as overdue and says no other spill in that period reached 5 bbl."
+
+- id: Q16a
+  turns:
+    - user_id: U-102
+      message: "FYI for everyone: WELL-0007 will be shut in from 17 Oct for a 10-day planned workover."
+    - user_id: U-201
+      new_thread: true
+      message: "Is any downtime planned for WELL-0007?"
+  must_include:
+    - "Jake Morales"
+    - ["2026-10-17", "17 oct", "oct 17", "october 17"]
+    - "10"
+  rubric: "Says yes, a planned shut-in, and attributes it to Jake Morales."
+
+- id: Q16b
+  follows: [Q11]
+  turns:
+    - user_id: U-202
+      new_thread: true
+      message: "For the three wells we discussed yesterday, what have repairs cost this year?"
+  must_not_include:
+    - WELL-0121
+    - WELL-0138
+    - WELL-0107
+  rubric: "Says it has no such earlier conversation with Jessica Reed, and does not use Michael Turner's history."
+
+- id: Q17a
+  turns:
+    - user_id: U-201
+      message: "WELL-0175 has been shut in for planned work since 14 Oct."
+    - user_id: U-204
+      new_thread: true
+      message: "WELL-0175 is running fine."
+  must_include:
+    - ["2026-10-15", "15 oct", "oct 15", "october 15"]
+    - "Jessica Reed"
+    - "0.4"
+    - "Michael Turner"
+  rubric: "Tells Tyler Hughes the well is not producing oil, which matches Michael Turner's note. Keeps both statements, marks Tyler Hughes's as unconfirmed, and asks for confirmation."
+
+- id: Q17b
+  follows: [Q17a]
+  turns:
+    - user_id: U-102
+      new_thread: true
+      message: "WELL-0001 is back online since 14 Oct."
+  must_include:
+    - ["2026-10-15", "15 oct", "oct 15", "october 15"]
+    - CTX-0001-003
+    - ["2026-10-20", "20 oct", "oct 20", "october 20"]
+  rubric: "Says the 15 Oct inspection shows WELL-0001 not producing oil, and records Jake Morales's claim as unconfirmed."
+
+- id: Q18
+  turns:
+    - user_id: U-201
+      message: "Was the 20 Aug spill at WELL-0101 real oil?"
+  must_include:
+    - INS-0101-0197
+    - "1.0"
+    - CTX-0101-002
+    - "Ryan Brooks"
+    - CTX-0101-003
+    - "Chris Dalton"
+    - MNT-0101-029
+  rubric: "Answers yes but shows both notes and says neither is a formal correction."
