@@ -138,6 +138,29 @@ def test_show_visual_fixes_column_name_keys():
     assert "missing ['y']" in bad["error"] and "spill_count" in bad["error"]
 
 
+def test_stacked_bar_chart_validation():
+    rid = results.put("waiting_reasons", [
+        {"area": "NE-07", "wait_reason": "parts", "share_pct": 60.0, "jobs": 6},
+        {"area": "NE-07", "wait_reason": "crew", "share_pct": 40.0, "jobs": 4},
+        {"area": "SW-23", "wait_reason": "weather", "share_pct": 100.0, "jobs": 2},
+    ])
+    ok = show_visual({"type": "stacked_bar_chart", "title": "t", "source": rid,
+                      "fields": {"category": "area", "series": "wait_reason", "value": "share_pct", "unit": "%"}})
+    assert ok["fields"] == {"category": "area", "series": "wait_reason", "value": "share_pct", "unit": "%"}
+    assert len(ok["rows"]) == 3
+    # A missing series is inferred from the other text column; a list value is read as its column.
+    guessed = show_visual({"type": "stacked_bar_chart", "title": "t", "source": rid,
+                           "fields": {"category": ["area"], "value": "share_pct"}})
+    assert guessed["fields"]["series"] == "wait_reason" and guessed["fields"]["category"] == "area"
+    # The value must be numeric, and the three columns different.
+    assert "numeric" in show_visual({"type": "stacked_bar_chart", "title": "t", "source": rid,
+                                     "fields": {"category": "area", "series": "jobs", "value": "wait_reason"}})["error"]
+    assert "different" in show_visual({"type": "stacked_bar_chart", "title": "t", "source": rid,
+                                       "fields": {"category": "area", "series": "area", "value": "share_pct"}})["error"]
+    assert "unknown columns" in show_visual({"type": "stacked_bar_chart", "title": "t", "source": rid,
+                                             "fields": {"category": "area", "series": "nope", "value": "share_pct"}})["error"]
+
+
 def test_ask_never_raises(use_model):
     use_model()                                     # no scripted replies: the model call fails
     a = api.ask("hello", "U-201")

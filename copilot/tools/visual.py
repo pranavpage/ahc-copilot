@@ -1,4 +1,7 @@
-"""The show_visual tool. Owner: D. G replaces VisualSpec with the full catalog (PLAN-UI.md)."""
+"""The show_visual tool. Owner: D. G replaces VisualSpec with the full catalog (PLAN-UI.md).
+
+The web UI renders the blocks: web/components/visual/Visual.tsx (types and fields must match).
+"""
 
 import re
 from typing import Literal
@@ -7,10 +10,10 @@ from pydantic import BaseModel, ValidationError
 
 from copilot import results
 
-VisualType = Literal["status_card", "table", "line_chart", "bar_chart", "map", "heatmap"]
+VisualType = Literal["status_card", "table", "line_chart", "bar_chart", "stacked_bar_chart", "map", "heatmap"]
 
 # Keys of `fields` whose values name columns of the source rows.
-COLUMN_KEYS = {"x", "y", "category", "value", "lat", "lon", "label", "color_by", "columns", "popup"}
+COLUMN_KEYS = {"x", "y", "category", "value", "series", "lat", "lon", "label", "color_by", "columns", "popup"}
 
 # The `fields` keys of each type: (required, optional). The same table is in the system prompt.
 FIELD_KEYS: dict[str, tuple[set[str], set[str]]] = {
@@ -18,6 +21,8 @@ FIELD_KEYS: dict[str, tuple[set[str], set[str]]] = {
     "table": ({"columns"}, set()),
     "line_chart": ({"x", "y"}, {"unit"}),
     "bar_chart": ({"category", "value"}, {"unit"}),
+    # One bar per category, one stacked segment per series. Long rows: one per category x series.
+    "stacked_bar_chart": ({"category", "series", "value"}, {"unit"}),
     "map": ({"lat", "lon"}, {"label", "color_by", "popup"}),
     "heatmap": ({"x", "y"}, {"value"}),      # no value = count the rows per cell
 }
@@ -26,6 +31,7 @@ FIELD_HINTS = {
     "table": '{"columns": ["<column>", ...]}',
     "line_chart": '{"x": "<date column>", "y": ["<column>"], "unit": "<unit>"}',
     "bar_chart": '{"category": "<column>", "value": "<column>", "unit": "<unit>"}',
+    "stacked_bar_chart": '{"category": "<column>", "series": "<column>", "value": "<column>", "unit": "<unit>"}',
     "map": '{"lat": "<column>", "lon": "<column>", "label": "<column>"}',
     "heatmap": '{"x": "<column>", "y": "<column>", "value": "<column>"}',
 }
@@ -82,6 +88,8 @@ def _normalize(kind: str, fields: dict, rows: list[dict], columns: set[str]) -> 
         "line_chart": {"x": first(date), "y": [c for c in named if numeric(c)] or None},
         "bar_chart": {"category": first(lambda c: not numeric(c) and not date(c)),
                       "value": first(numeric, named) or first(numeric)},
+        "stacked_bar_chart": {"category": first(lambda c: not numeric(c) and not date(c)),
+                              "value": first(numeric, named) or first(numeric)},
         "map": {"lat": "lat" if "lat" in columns else None, "lon": "lon" if "lon" in columns else None,
                 "label": "asset_id" if "asset_id" in columns else None},
         "heatmap": {"x": first(date), "value": first(numeric, named)},
@@ -89,6 +97,10 @@ def _normalize(kind: str, fields: dict, rows: list[dict], columns: set[str]) -> 
     for key, guess in guesses.items():
         if key not in out and guess:
             out[key] = guess
+    if kind == "stacked_bar_chart" and "series" not in out:
+        series = first(lambda c: not numeric(c) and not date(c), skip=_column_names(out.get("category")))
+        if series:
+            out["series"] = series
     if kind == "heatmap" and "y" not in out:
         y = first(lambda c: not numeric(c), skip=_column_names(out.get("x")))
         if y:
@@ -124,6 +136,15 @@ def show_visual(spec: VisualSpec | dict) -> dict:
                    if c not in columns]
         if unknown:
             return {"error": f"unknown columns {unknown} in fields; columns of {spec.source}: {sorted(columns)}"}
+
+    if spec.type == "stacked_bar_chart":
+        f = {**spec.fields, **{k: _column_names(spec.fields[k])[0] for k in ("category", "series", "value")}}
+        spec = spec.model_copy(update={"fields": f})
+        if len({f["category"], f["series"], f["value"]}) < 3:
+            return {"error": f"stacked_bar_chart needs three different columns {FIELD_HINTS[spec.type]}; got {f}"}
+        if rows and not all(isinstance(r.get(f["value"]), (int, float)) and not isinstance(r.get(f["value"]), bool)
+                            for r in rows if r.get(f["value"]) is not None):
+            return {"error": f"stacked_bar_chart `value` must be a numeric column; '{f['value']}' is not"}
 
     # A card shows one well: keep its row. If no row matches (e.g. the model wrote the column
     # name instead of the well ID), keep the rows as they are.

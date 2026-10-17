@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import {
   Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
-import { fmt, label, resolve, type Row, type VisualBlock } from "./spec";
+import { fmt, label, pivot, resolve, type Row, type VisualBlock } from "./spec";
 
 const VisualMap = dynamic(() => import("./VisualMap"), {
   ssr: false,
@@ -40,6 +40,10 @@ function Body({ block }: { block: VisualBlock }) {
       return r.x && r.y.length ? <LineView rows={block.rows} x={r.x} y={r.y} unit={r.unit} /> : <Table rows={block.rows} cols={r.tableCols} />;
     case "bar_chart":
       return r.category && r.value ? <BarView rows={block.rows} x={r.category} y={r.value} unit={r.unit} /> : <Table rows={block.rows} cols={r.tableCols} />;
+    case "stacked_bar_chart":
+      return r.category && r.series && r.value
+        ? <StackedBarView rows={block.rows} x={r.category} series={r.series} y={r.value} unit={r.unit} />
+        : <Table rows={block.rows} cols={r.tableCols} />;
     case "heatmap":
       return r.x && r.heatY ? <Heatmap rows={block.rows} x={r.x} y={r.heatY} value={r.heatValue} /> : <Table rows={block.rows} cols={r.tableCols} />;
     case "map":
@@ -114,6 +118,27 @@ function BarView({ rows, x, y, unit }: { rows: Row[]; x: string; y: string; unit
         <Bar dataKey={y} name={label(y)} fill={COLORS[0]} radius={[4, 4, 0, 0]} isAnimationActive={false} />
       </BarChart>
     </ResponsiveContainer>
+  );
+}
+
+function StackedBarView({ rows, x, series, y, unit }: { rows: Row[]; x: string; series: string; y: string; unit?: string }) {
+  const { data, seriesNames } = pivot(rows, x, series, y);
+  return (
+    <>
+      <ResponsiveContainer width="100%" height={320}>
+        <BarChart data={data} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" opacity={0.4} />
+          <XAxis dataKey={x} fontSize={12} />
+          <YAxis fontSize={12} unit={unit ? ` ${unit}` : undefined} />
+          <Tooltip formatter={(v) => fmt(v)} />
+          <Legend />
+          {seriesNames.map((s, i) => (
+            <Bar key={s} dataKey={s} stackId="stack" fill={COLORS[i % COLORS.length]} isAnimationActive={false} />
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+      <p className="mt-1 text-xs text-muted-foreground">Segments: {label(series)}; height: {label(y)}{unit ? ` (${unit})` : ""}.</p>
+    </>
   );
 }
 

@@ -7,6 +7,8 @@ or the `x-user-id` request header (LangGraph server, sent by the web UI).
 Graph: agent (the ReAct loop) -> verify -> remember. `verify` checks the answer against the tool
 results (copilot/verify.py); a failed answer goes back to the agent once with the problems.
 `remember` indexes the final answer for `recall_conversations`.
+Memory tools (the user comes from the config, never from the model): recall_conversations and
+set_preference (private, lasting; applied to data tool rows and listed in that user's prompt).
 """
 
 import inspect
@@ -21,6 +23,7 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemM
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.config import get_config
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import create_react_agent
 
@@ -82,6 +85,20 @@ def _clean_well_args(kwargs: dict) -> list[str]:
     return notes
 
 
+def _user_settings(kwargs: dict) -> dict:
+    """The saved preference settings of the user in the run config (none outside a run)."""
+    config = kwargs.get("config")
+    if config is None:
+        try:
+            config = get_config()
+        except RuntimeError:
+            return {}
+    try:
+        return memory.preference_settings(run_context(config).get("user_id"))
+    except Exception:  # noqa: BLE001 - preferences must never break a tool
+        return {}
+
+
 def data_tool(fn) -> StructuredTool:
     """Wrap a data tool. The model sees compact JSON; the artifact keeps result_id, ids and notes."""
 
@@ -97,6 +114,11 @@ def data_tool(fn) -> StructuredTool:
         if not res.result_id:
             res.result_id = results.put(res.kind, res.rows)
         res.notes = id_notes + list(res.notes)
+        if settings := _user_settings(kwargs):
+            rows, pref_notes = memory.apply_preferences(res.rows, settings)
+            if pref_notes:
+                res.rows, res.notes = rows, res.notes + pref_notes
+                res.result_id = results.put(res.kind, rows)
         artifact = {"result_id": res.result_id, "ids": res.ids, "notes": res.notes}
         return _dumps(_for_model(res)), artifact
 
@@ -121,7 +143,7 @@ def visual_tool() -> StructuredTool:
         name="show_visual",
         description=(
             "Show one visual with the answer. `type`: status_card | table | line_chart | bar_chart | "
-            "map | heatmap. `source`: the result_id of a data tool result. `fields`: the columns to use "
+            "stacked_bar_chart | map | heatmap. `source`: the result_id of a data tool result. `fields`: the columns to use "
             "(see the system prompt). The rows are filled in from `source`."
         ),
         response_format="content_and_artifact",
@@ -149,9 +171,31 @@ def recall_conversations(query: str | None = None, limit: int = 5, *, config: Ru
     return ToolResult(result_id="", kind="recall_conversations", rows=rows, ids=[], notes=notes)
 
 
+def set_preference(preference: str, *, config: RunnableConfig) -> ToolResult:
+    """Save a lasting, private preference of the current user, in their words (e.g. "sort wells by
+    area, then by well ID; show costs in thousands of dollars").
+
+    Use it when the user asks for something "just for me", "from now on", "whenever you ...", about
+    how answers look (order, units, format). It applies to this user only, in every later session;
+    other users never see it. Not for facts about wells (use `add_note`) or rules (use `set_rule`).
+    """
+    c = run_context(config)
+    user_id = c.get("user_id")
+    if not memory.user_profile(user_id):
+        return ToolResult(result_id="", kind="set_preference", rows=[], ids=[],
+                          notes=["the user is not identified, so nothing was saved; ask who they are"])
+    row = memory.set_preference(user_id, preference, c.get("thread_id"))
+    return ToolResult(result_id="", kind="set_preference", rows=[row], ids=[], notes=[
+        "saved as a private preference of this user only; it applies from now on, in every session. "
+        "Tell the user that"])
+
+
+MEMORY_TOOLS = [recall_conversations, set_preference]
+
+
 def build_tools() -> list[StructuredTool]:
     tools = [visual_tool() if fn is show_visual else data_tool(fn) for fn in ALL_TOOLS]
-    return [*tools, *map(data_tool, FEEDBACK_TOOLS), data_tool(recall_conversations)]
+    return [*tools, *map(data_tool, FEEDBACK_TOOLS), *map(data_tool, MEMORY_TOOLS)]
 
 
 def _turn_text(messages: list[AnyMessage]) -> tuple[str, str]:

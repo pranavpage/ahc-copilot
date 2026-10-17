@@ -379,6 +379,18 @@ CREATE TABLE IF NOT EXISTS conversation_entities (
 );
 CREATE INDEX IF NOT EXISTS idx_conv_entities ON conversation_entities(conversation_id, entity_type);
 
+-- Lasting preferences a user asked for ("just for me: sort wells by area, costs in $k").
+-- Private: injected into that user's system prompt only, in every later session.
+CREATE TABLE IF NOT EXISTS user_preferences (
+    pref_id          INTEGER PRIMARY KEY,
+    user_id          TEXT NOT NULL REFERENCES users(user_id),
+    preference       TEXT NOT NULL,     -- in the user's words
+    created_at       TEXT NOT NULL,
+    conversation_id  TEXT,
+    status           TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'retracted'))
+);
+CREATE INDEX IF NOT EXISTS idx_user_preferences_user ON user_preferences(user_id, status);
+
 -- ============================================================================
 -- Full-text search over every text source
 -- ============================================================================

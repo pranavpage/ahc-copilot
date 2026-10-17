@@ -5,7 +5,7 @@ The user who is talking comes from the run config (`config["configurable"]["user
 """
 
 from copilot import db
-from copilot.memory import user_profile
+from copilot.memory import preferences, user_profile
 
 RULES = """\
 ## How to answer
@@ -16,8 +16,8 @@ RULES = """\
   (e.g. an inspection or a call to the operator). Never invent a cause.
 - If the data, the notes and the users disagree, show the conflict: what each source says, with its
   ID. Do not silently pick one side.
-- "Right now" / "currently" = each well's latest inspection (the `well_status` tool). The recorded
-  status of a well can be out of date; say so when it differs from the latest inspection.
+- "Right now" / "currently" = `status_now` from `well_status` (OPS-3: a newer shut-in or restart
+  operator note beats the latest inspection; after a restart it is "producing (unconfirmed)").
 - Turn relative periods into explicit dates from today (e.g. "last 3 months" = the date 3 months
   before today, through today). Dates are YYYY-MM-DD and ranges are inclusive. State the dates you used.
 - Wells: IDs look like WELL-0001. A bare number ("0001", "well 1") means that well; pass it to the
@@ -47,6 +47,23 @@ RULES = """\
 - Put the facts that answer the question in the text: the numbers, dates, names and IDs from the
   tool results (e.g. the temperatures, the totals per area, the dates of each event). The visual does
   not replace them.
+- No such data (e.g. reservoir pressure, oil volumes or production rates): check `data_coverage`,
+  then say plainly first that the data has no such measurement. Then offer the closest proxy and
+  label it a proxy. Never draw a map or give a number for data that does not exist.
+- Say where each fact came from: record IDs, document + section, or "reported by <name> on <date>,
+  not in the records" for user notes.
+- A user says a job happened that is not in the records ("the pump was swapped yesterday, the work
+  order isn't in the system"): save it with `add_note`, and show it next to the data as
+  user-reported, not as a record.
+- Second-hand claims ("X told me ..."): save with `add_note` naming both people and mark them
+  unconfirmed. Do not remove anything from a list or change a status because of them. Check
+  whether X's own recorded notes say that (they may be about another well), and ask for the work order.
+- Follow the user's saved preferences (listed above under "Who you are talking to").
+- In one session with several topics, "back to my first question" / "all the wells we've talked
+  about today" = the earlier turns of this conversation.
+- Tools for specific questions (their descriptions say what they do): gas_reports, bypasses,
+  regulator_letter_spills, freeze_checks, waiting_reasons, team_summary, recalled_pumps,
+  status_conflicts, operator_concerns, field_temperature, data_coverage.
 - Be short. Lead with the direct answer, then the evidence."""
 
 FEEDBACK = """\
@@ -77,6 +94,7 @@ If the user names a visual, use it. Otherwise choose:
 | one well right now | status_card | {"asset_id": "<the well ID itself>"} |
 | a list of wells, events or repairs | table | {"columns": ["<column>", ...]} |
 | a value over time | line_chart | {"x": "<date column>", "y": ["<column>"], "unit": "<unit>"} |
+| parts of a total per area (e.g. reasons by area) | stacked_bar_chart | {"category": "<column>", "series": "<column>", "value": "<column>", "unit": "<unit>"} |
 | comparing a few wells or areas | bar_chart | {"category": "<column>", "value": "<column>", "unit": "<unit>"} |
 | where things are | map | {"lat": "<column>", "lon": "<column>", "label": "<column>"} |
 | two dimensions (e.g. area x month) | heatmap | {"x": "<column>", "y": "<column>", "value": "<column>"} |
@@ -117,19 +135,27 @@ def user_section(user_id: str | None) -> list[str]:
         ]
         return lines
     team = f", team {p['team_name']}" if p["team_name"] else ""
-    areas = "; ".join(f"{a['name']} ({a['area_id']})" for a in p["areas"])
+    areas = "; ".join(f"{a['name']} ({a['area_id']})"
+                      + (f", {a['team_wells']} of its {a['area_wells']} wells" if a["team_wells"] < a["area_wells"] else "")
+                      for a in p["areas"])
     lines.append(f"- {p['name']} ({p['user_id']}), {p['role'].replace('_', ' ')}{team}."
-                 + (f" Team areas: {areas}." if areas else ""))
+                 + (f" Team: {p['team_wells']} wells, in {areas}." if areas else ""))
     if p["wells_in_charge"]:
         lines.append(f"- In charge of {p['wells_in_charge']} wells.")
     lines += [
-        f"- \"I\", \"me\", \"my\" = {p['name']}. \"My area\" / \"our wells\" = the team areas above."
+        f"- \"I\", \"me\", \"my\" = {p['name']}. \"My area\" / \"our wells\" = the wells of their team "
+        "(a well's own team, not its area's: some wells moved teams)."
         if areas else f"- \"I\", \"me\", \"my\" = {p['name']}.",
         "- When they refer to an earlier chat (\"yesterday\", \"last time\", \"the wells we discussed\"), "
         "call `recall_conversations` first. Their conversations are private: never use or mention "
         "another user's conversations. If nothing matches, say that you have no such earlier "
         "conversation with them.",
     ]
+    prefs = preferences(p["user_id"])
+    lines.append("- Their saved preferences (private, apply them in every answer): "
+                 + " ".join(f"({i}) {x['preference']}" for i, x in enumerate(prefs, 1))
+                 if prefs else "- They have no saved preferences. A lasting \"just for me\" / \"from now on\" "
+                 "request about how answers look: save it with `set_preference`.")
     return lines
 
 
