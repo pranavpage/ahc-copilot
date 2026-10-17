@@ -2,7 +2,7 @@
 
     uv run python -m copilot.chat --user U-201
 
-Commands: /new (new thread), /user U-202 (change user, same thread), /quit.
+Commands: /new (new thread), /user U-202 (change user; starts a new thread, chats are private), /quit.
 """
 
 import argparse
@@ -52,8 +52,8 @@ def main() -> None:
             if len(parts) != 2:
                 print("usage: /user U-202")
                 continue
-            user = parts[1]
-            print(f"user {user}, same thread {thread[:8]}")
+            user, thread = parts[1], uuid.uuid4().hex
+            print(f"user {user}, new thread {thread[:8]}")
             continue
         print_answer(ask(line, user, thread))
 

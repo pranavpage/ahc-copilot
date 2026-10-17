@@ -10,6 +10,8 @@ import {
 } from "@assistant-ui/react";
 import dynamic from "next/dynamic";
 import toolkit from "./toolkit";
+import { MyRuntimeProvider } from "./MyRuntimeProvider";
+import { UserPicker, UserProvider, useUser } from "./user";
 
 // The thread list loads from the server; render it on the client only (avoids a hydration mismatch).
 const ThreadList = dynamic(
@@ -51,15 +53,30 @@ function ThreadWithSuggestions() {
   );
 }
 
+// One runtime per user (key = user ID): changing the user starts a fresh thread list, so one
+// user's chats are never shown to another.
+function Chat() {
+  const { userId } = useUser();
+  if (!userId) return null;
+  return (
+    <MyRuntimeProvider key={userId}>
+      <div className="flex h-dvh">
+        <div className="flex max-w-md flex-col">
+          <UserPicker />
+          <ThreadList />
+        </div>
+        <div className="flex-grow">
+          <ThreadWithSuggestions />
+        </div>
+      </div>
+    </MyRuntimeProvider>
+  );
+}
+
 export default function Home() {
   return (
-    <div className="flex h-dvh">
-      <div className="max-w-md">
-        <ThreadList />
-      </div>
-      <div className="flex-grow">
-        <ThreadWithSuggestions />
-      </div>
-    </div>
+    <UserProvider>
+      <Chat />
+    </UserProvider>
   );
 }

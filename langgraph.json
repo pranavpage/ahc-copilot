@@ -1,7 +1,17 @@
 {
-  "dependencies": ["."],
+  "dependencies": [
+    "."
+  ],
   "graphs": {
     "copilot": "./copilot/agent.py:graph"
   },
-  "env": ".env"
+  "env": ".env",
+  "http": {
+    "app": "./copilot/http_app.py:app",
+    "configurable_headers": {
+      "include": [
+        "x-user-id"
+      ]
+    }
+  }
 }
