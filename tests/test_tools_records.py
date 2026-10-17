@@ -195,7 +195,14 @@ def test_search_docs_fts_syntax_is_safe(query):
 def test_search_docs_asset_filter():
     r = search_docs("flowline leak", asset_id="WELL-0001", limit=20)
     assert r.rows and all(x["asset_id"] in (None, "WELL-0001") for x in r.rows)
-    assert len(search_docs("flowline", limit=3).rows) == 3
+    r = search_docs("flowline", limit=3)
+    kinds = [x["kind"] for x in r.rows]
+    assert kinds.count("doc_section") == 3 and len(kinds) == 6     # manuals are never crowded out
+
+
+def test_search_docs_manuals_not_crowded_out():
+    cites = [x["cite"] for x in search_docs("pressure test").rows]
+    assert "field-work-sop §3. Protocols" in cites and any(c.startswith("MNT-") for c in cites)
 
 
 # ----------------------------------------------------------------------------

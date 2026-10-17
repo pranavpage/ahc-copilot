@@ -190,7 +190,7 @@ def spills(
                 row["spill_report_due"] = due.date().isoformat()
                 overdue = row["spill_report_due"] < db.today()
                 notes.append(f"{r['inspection_id']} ({r['asset_id']}): reportable, no spill report filed; due "
-                             f"{row['spill_report_due']} ({_num(r['notice_hours'])} h){', overdue' if overdue else ''}")
+                             f"{row['spill_report_due']} ({_num(r['notice_hours'])} h){', overdue' if overdue else ''} (say so)")
         if correction_ids:
             row["corrections"] = correction_details(correction_ids)
             notes += [correction_note(c) for c in row["corrections"]]
@@ -224,7 +224,7 @@ def spills(
                 continue
             notes.append(f"{row['inspection_id']}: {len(linked)} note(s) on this spill: " + "; ".join(
                 f"{n['note_id']} by {n['author_name']}: '{n['text']}'" for n in linked)
-                + ". None is a formal correction, so the detection stands; show both sides")
+                + ". None is a formal correction, so the detection stands; show both sides (say so)")
 
     spill_rules = db.rows(
         "SELECT DISTINCT doc_id, section_path, rule_id FROM well_rules WHERE rule_key IN"
@@ -243,7 +243,8 @@ def spills(
         if len(cancelled) > 5:      # a field-wide query: IDs only, to keep the result small
             why = {}
         notes.append(
-            f"{len(cancelled)} detection(s) cancelled by corrections and not counted (say so): " + "; ".join(
+            f"{len(cancelled)} detection(s) cancelled by corrections and not counted{' (say so)' if why else ''}: "
+            + "; ".join(
                 f"{r['inspection_id']} ({r['inspected_date']}): " + ", ".join(
                     f"{c} by {why[c]['corrected_by']}" + (f", note {why[c]['note_id']}" if why[c].get("note_id") else "")
                     + f": '{why[c]['reason']}'" for c in (r["correction_ids"] or "").split() if c in why)
@@ -624,7 +625,7 @@ def rca_due(area: str | None = None, asset_ids: list[str] | None = None,
                          "AND source = 'document' AND status = 'active' AND (well_type = ? OR well_type IS NULL) "
                          "ORDER BY well_type IS NULL LIMIT 1", (r["well_type"],))
         if r["source"] == "user" and manual and r["corrective_repairs"] < manual[0]["value"]:
-            by_user.append(f"{r['asset_id']} ({r['well_type']}, {r['corrective_repairs']} repairs; "
+            by_user.append(f"{r['asset_id']} ({r['well_type']}, {r['corrective_repairs']} repairs, {cite}; "
                            f"the manual {manual[0]['doc_id']} says {_num(manual[0]['value'])})")
     applied = db.rows(f"""
         SELECT w.well_type, c.value, c.rule_id, c.source, c.doc_id, c.section_path, c.author_user_id,
@@ -648,8 +649,11 @@ def rca_due(area: str | None = None, asset_ids: list[str] | None = None,
 def search_docs(query: str, asset_id: str | None = None, limit: int = 5) -> ToolResult:
     """Full-text search over manuals, SOPs, maintenance reports and notes.
 
-    Returns the best `limit` sections with their citation (document and section, or record ID).
+    Returns the best `limit` manual and SOP sections and, separately, the best `limit` record
+    sections (maintenance reports, inspection and human notes), so the manuals are never crowded
+    out by the many reports. Each row has its citation (document and section, or record ID).
     `asset_id` limits well-specific text to one well; manuals and SOPs are always searched.
+    For "what kinds of X" or "every X", use `find_mentions`: it scans everything.
 
     Owner: A2.
     """
@@ -659,24 +663,156 @@ def search_docs(query: str, asset_id: str | None = None, limit: int = 5) -> Tool
         return _empty(kind, "empty query; give some words to search for")
     limit = max(1, min(int(limit or 5), 50))
     match = " OR ".join(f'"{w}"' for w in words)
-    found = db.rows("""
-        SELECT kind, ref_id, asset_id, heading,
-               snippet(search_fts, 4, '**', '**', '…', 30) AS snippet
-        FROM search_fts
-        WHERE search_fts MATCH :q AND (:a IS NULL OR asset_id = :a OR asset_id IS NULL)
-        ORDER BY bm25(search_fts)
-        LIMIT :n""", {"q": match, "a": asset_id, "n": limit})
+    found = []
+    for docs in (True, False):
+        found += db.rows(f"""
+            SELECT kind, ref_id, asset_id, heading,
+                   snippet(search_fts, 4, '**', '**', '…', 30) AS snippet
+            FROM search_fts
+            WHERE search_fts MATCH :q AND kind {'=' if docs else '<>'} 'doc_section'
+              AND (:a IS NULL OR asset_id = :a OR asset_id IS NULL)
+            ORDER BY bm25(search_fts)
+            LIMIT :n""", {"q": match, "a": asset_id, "n": limit})
 
-    paths = _doc_section_paths({r["ref_id"] for r in found if r["kind"] == "doc_section"})
     rows, ids = [], []
     for r in found:
-        cite = r["ref_id"]
-        if r["kind"] == "doc_section":
-            path = next((p for p in paths.get(r["ref_id"], []) if r["heading"].endswith(f" — {p}")), None)
-            cite = f"{r['ref_id']} §{path}" if path else r["ref_id"]
+        cite = _fts_cite(r)
         rows.append({**r, "cite": cite})
         ids.append(cite)
     notes = [] if rows else [f"no matches for '{query}'"]
+    return _result(kind, rows, ids, notes)
+
+
+def _fts_cite(r: dict, paths: dict[str, list[str]] | None = None) -> str:
+    """Citation of a search_fts row: '<doc_id> §<section>' for a manual section, else the record ID."""
+    if r["kind"] != "doc_section":
+        return r["ref_id"]
+    paths = paths if paths is not None else _doc_section_paths({r["ref_id"]})
+    path = next((p for p in paths.get(r["ref_id"], []) if r["heading"].endswith(f" — {p}")), None)
+    return f"{r['ref_id']} §{path}" if path else r["ref_id"]
+
+
+# ----------------------------------------------------------------------------
+# find_mentions: every mention of a word, in all the data
+# ----------------------------------------------------------------------------
+
+STOP = set("""a an the and or but then than to of in on at by for from with without into onto over under
+after before during while when where which who whom whose that this these those it its is are was were be
+been being has have had do does did not no nor so as if each every all any some per via our their his her
+we they he she you i me us them my your one two three four five six seven eight nine ten
+also only just very more most less least such same other another""".split())
+CLAUSE = re.compile(r"[;:|\n()\[\]!?,]|\.(?!\d)")     # a decimal point does not end a clause
+WORD = re.compile(r"[A-Za-z][A-Za-z\-]*")
+SOURCE_NAMES = {"doc_section": "manual/SOP sections", "report_section": "maintenance report sections",
+                "inspection_note": "inspection notes", "note": "human notes",
+                "maintenance_record": "maintenance records", "regulatory_event": "regulatory events"}
+MAX_GROUPS = 40
+
+
+def _group_key(text: str, start: int, end: int, lemma: str) -> str:
+    """'pressure test', 'gas test', 'test dump valve': the content word before the term in the
+    same clause; for a verb with no word before it ("…and tested the dump valve"), the words after."""
+    before = CLAUSE.split(text[max(0, start - 80):start])[-1]
+    prev = [w.lower() for w in WORD.findall(before)]
+    content = [w for w in prev if w not in STOP]
+    word = text[start:end].lower()
+    verb = word.endswith(("ed", "ing")) and (not prev or prev[-1] in STOP)
+    if content and not verb:
+        return f"{content[-1].strip('-')} {lemma}"
+    after = CLAUSE.split(text[end:end + 80])[0]
+    nxt = [w.lower() for w in WORD.findall(after) if w.lower() not in STOP][:3]
+    return f"{lemma} {' '.join(nxt)}".strip()
+
+
+def find_mentions(terms: list[str], asset_id: str | None = None) -> ToolResult:
+    """Find EVERY mention of a word in all the data, grouped by what each mention is about.
+
+    Use it for "what kinds / types of X", "which records mention X", or to check that a list is
+    complete. It scans all manual and SOP sections, maintenance reports, inspection notes, human
+    notes, maintenance records and regulatory events, with no top-N limit. `terms`: the word and its
+    synonyms, matched as word starts ("test" matches tests, tested, testing). One row per group: the
+    words next to the term (e.g. "pressure test", "gas test"), how many mentions and records, the
+    manual and SOP sections that state it, and example records with their text. Notes give how much
+    data was scanned and the totals. Name every group in the answer (or say why one is left out)
+    and give the totals.
+    """
+    kind = "find_mentions"
+    terms = [t.strip().lower() for t in terms or [] if t and t.strip()]
+    if not terms:
+        return _empty(kind, "give at least one term, e.g. ['test']")
+    pattern = re.compile(r"\b(" + "|".join(re.escape(t) for t in terms) + r")\w*", re.I)
+    lemma = terms[0]
+    a = {"a": asset_id}
+
+    scanned = {r["kind"]: r["n"] for r in db.rows(
+        "SELECT kind, COUNT(*) AS n FROM search_fts WHERE (:a IS NULL OR asset_id = :a OR asset_id IS NULL) "
+        "GROUP BY kind", a)}
+    texts = db.rows(
+        "SELECT kind, ref_id, asset_id, heading, body FROM search_fts WHERE search_fts MATCH :q "
+        "AND (:a IS NULL OR asset_id = :a OR asset_id IS NULL)",
+        {"q": " OR ".join(f'"{t}"*' for t in terms), **a})
+    like = " OR ".join(f"{{col}} LIKE '%{t}%'" for t in terms)
+    scanned["maintenance_record"] = db.rows(
+        "SELECT COUNT(*) AS n FROM maintenance WHERE (:a IS NULL OR asset_id = :a)", a)[0]["n"]
+    texts += [{"kind": "maintenance_record", "ref_id": m["maintenance_id"], "asset_id": m["asset_id"],
+               "heading": None, "body": f"{m['issue']}. {m['action_taken'] or ''}"}
+              for m in db.rows(f"""SELECT maintenance_id, asset_id, issue, action_taken FROM maintenance
+                                   WHERE (:a IS NULL OR asset_id = :a)
+                                     AND ({like.format(col='issue')} OR {like.format(col='action_taken')})""", a)]
+    scanned["regulatory_event"] = db.rows(
+        "SELECT COUNT(*) AS n FROM regulatory_events WHERE (:a IS NULL OR asset_id = :a)", a)[0]["n"]
+    texts += [{"kind": "regulatory_event", "ref_id": e["event_id"], "asset_id": e["asset_id"],
+               "heading": None, "body": e["detail"] or ""}
+              for e in db.rows(f"""SELECT event_id, asset_id, detail FROM regulatory_events
+                                   WHERE (:a IS NULL OR asset_id = :a) AND ({like.format(col='detail')})""", a)]
+
+    paths = _doc_section_paths({t["ref_id"] for t in texts if t["kind"] == "doc_section"})
+    groups: dict[str, dict] = {}
+    total = 0
+    for t in texts:
+        for m in pattern.finditer(t["body"]):
+            total += 1
+            key = _group_key(t["body"], m.start(), m.end(), lemma)
+            g = groups.setdefault(key, {"group": key, "mentions": 0, "records": set(), "sources": {},
+                                        "doc_sections": [], "examples": []})
+            g["mentions"] += 1
+            ref = _fts_cite(t, paths) if t["kind"] == "doc_section" else t["ref_id"]
+            if ref not in g["records"]:
+                g["records"].add(ref)
+                g["sources"][t["kind"]] = g["sources"].get(t["kind"], 0) + 1
+                if t["kind"] == "doc_section":
+                    g["doc_sections"].append(ref)
+                elif len(g["examples"]) < 2:
+                    g["examples"].append({"ref_id": ref, "text": "…" + t["body"][max(0, m.start() - 90):m.end() + 70]
+                                          .replace("\n", " ").strip() + "…"})
+    if not total:
+        notes = [f"no mention of {', '.join(terms)} in any source (scanned: "
+                 + ", ".join(f"{n} {SOURCE_NAMES.get(k, k)}" for k, n in scanned.items()) + ")"]
+        return _result(kind, [], [], notes)
+
+    ordered = sorted(groups.values(), key=lambda g: (-g["mentions"], g["group"]))
+    # Small groups that no manual states (a few mentions, usually the word used in general) go
+    # into one "other" row. A group that a manual or SOP states always gets its own row.
+    small = max(3, total // 1000)
+    main = [g for g in ordered if g["mentions"] >= small or g["doc_sections"]][:MAX_GROUPS]
+    rest = [g for g in ordered if g not in main]
+    rows = [{"group": g["group"], "mentions": g["mentions"], "records": len(g["records"]),
+             "sources": g["sources"], "doc_sections": g["doc_sections"], "examples": g["examples"]}
+            for g in main]
+    if rest:
+        rows.append({"group": "other", "mentions": sum(g["mentions"] for g in rest),
+                     "records": len(set().union(*(g["records"] for g in rest))), "sources": {},
+                     "doc_sections": sorted({d for g in rest for d in g["doc_sections"]}),
+                     "examples": [{"ref_id": next(iter(sorted(g["records"]))), "text": g["group"]} for g in rest[:15]]})
+    ids = [d for r in rows for d in r["doc_sections"]] + [e["ref_id"] for r in rows for e in r["examples"]]
+    records = len({ref for g in groups.values() for ref in g["records"]})
+    notes = [
+        "scanned all data: " + ", ".join(f"{n} {SOURCE_NAMES.get(k, k)}" for k, n in scanned.items()),
+        f"{total} mentions of {', '.join(terms)} in {records} records, in {len(rows)} groups; every mention "
+        f"is in one group" + (f" ({rows[-1]['mentions']} in 'other': the word used in general or rare uses)"
+                              if rest else "")
+        + ". Name every group in the answer or say why it is left out, and give these totals (say so)",
+    ]
     return _result(kind, rows, ids, notes)
 
 

@@ -36,6 +36,13 @@ RULES = """\
 - Rule questions: give each rule check with the status the tool gives (breach, open or met), what
   is still open (open events, fines, due dates) and the IDs. Never call an open item closed.
 - Costs: take totals from `repair_costs`; never add numbers up yourself.
+- "What kinds / types of X", "every X", "which records mention X": call `find_mentions` (it scans all
+  the data). Name every group it returns, or say why one is left out, and give its totals. Use
+  `search_docs` to read a specific rule or passage.
+- Your answer is checked against the tool results before the user sees it: every ID, number and
+  date must be in a tool result; a list must name every item (or say "k of n" and why); every tool
+  note marked "(say so)" must be in the answer. If the check fails, you get the problems and
+  write the answer again.
 - For "right now" answers, give the date and ID of the latest inspection and who did it.
 - Put the facts that answer the question in the text: the numbers, dates, names and IDs from the
   tool results (e.g. the temperatures, the totals per area, the dates of each event). The visual does
