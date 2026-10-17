@@ -1,4 +1,4 @@
-"""Eval metrics (deepeval). FactRecall and VisualMatch need no LLM; the Judge does.
+"""Eval metrics (deepeval). FactRecall and VisualMatch need no LLM; the Judge (L1 data, --judge) does.
 
 The test case carries the answer in `actual_output` and the rest of the Answer in
 `metadata`: {"citations": [...], "blocks": [...], "tool_results": [{"name", "text"}]}.
@@ -9,16 +9,21 @@ report). Add a new metric to METRICS; the runner builds one of each per case.
 """
 
 import json
+import os
 import re
 
-from deepeval.metrics import BaseMetric, GEval
-from deepeval.test_case import LLMTestCase, SingleTurnParams
+from deepeval.metrics import BaseMetric
+from deepeval.test_case import LLMTestCase
+from pydantic import BaseModel, Field
 
 from copilot import results
 from copilot.api import Answer
 
+DEFAULT_JUDGE_MODEL = "deepseek/deepseek-v4-pro"
+
 # A comma between digits that is followed by exactly 3 digits: "5,000" -> "5000".
 _THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
+_WHOLE = re.compile(r"(\d+)(?:\.0+)?")
 
 
 def normalise(text: str) -> str:
@@ -34,6 +39,9 @@ def contains(haystack: str, needle: str) -> bool:
     needle = normalise(needle)
     left = r"(?<![\w.])" if needle[:1].isalnum() else ""
     right = r"(?!\w|\.\d)" if needle[-1:].isalnum() else ""
+    # A whole number matches with or without ".0": "49" = "49.0", "41.0" = "41".
+    if (whole := _WHOLE.fullmatch(needle)):
+        return re.search(left + re.escape(whole.group(1)) + r"(?:\.0+)?" + right, haystack) is not None
     return re.search(left + re.escape(needle) + right, haystack) is not None
 
 
@@ -92,7 +100,7 @@ class FactRecall(_Sync, BaseMetric):
     `in_tool_results`: some alternative is in the rows of a tool call of the scored turn.
     """
 
-    version = 1
+    version = 2                # 2: a whole number matches with or without ".0"
 
     def __init__(self, must_include: list[str | list[str]], must_not_include: list[str] = ()):
         self.must_include = [[i] if isinstance(i, str) else list(i) for i in must_include]
@@ -160,33 +168,99 @@ class VisualMatch(_Sync, BaseMetric):
         return "VisualMatch"
 
 
-class Judge(GEval):
-    """LLM judge on the case rubric (GEval). Uses FALLBACK_MODEL on OpenRouter. Only with --judge.
+JUDGE_PROMPT = """\
+You check one answer of an oil-field data assistant. Check the data, not the style.
 
-    details: rubric, evaluation_model.
+Question:
+{question}
+
+Expected facts (each one must be in the answer; "a | b" = any one of them):
+{facts}
+
+Rubric (must be true of the answer): {rubric}
+
+Answer:
+{answer}
+
+Tool results the assistant saw (JSON, may be cut):
+{tools}
+
+Rules:
+- A fact is stated if the answer gives the same value in any form: 49 = 49.0 = "49 days",
+  2026-10-15 = "15 Oct" = "October 15", 5,000 = 5000, an ID in any quotes or formatting.
+  A rounded value is stated if it rounds the same way (21.13 -> 21.1).
+- A fact is not stated if it is only implied, or only in the tool results.
+- Extra details and justifications (e.g. why a rule was broken, which note explains it) are fine.
+  List a contradiction only if the answer states something that conflicts with an expected fact,
+  the rubric or the tool results.
+- If there is no rubric, set rubric_met to null."""
+
+
+class FactVerdict(BaseModel):
+    fact: str = Field(description="the expected fact, as listed")
+    stated: bool
+    evidence: str = Field(description="the words of the answer that state it, or why it is missing")
+
+
+class Verdict(BaseModel):
+    facts: list[FactVerdict]
+    rubric_met: bool | None
+    contradictions: list[str]
+    reason: str = Field(description="one sentence")
+
+
+class Judge(_Sync, BaseMetric):
+    """L1 data judge (LLM): each expected fact stated in any equivalent form, the rubric met, and
+    no contradiction. Extra justification is not penalised. Only with --judge.
+
+    Score = share of facts stated (and the rubric, as one more item). JUDGE_MODEL on OpenRouter.
+    details: facts [{fact, stated, evidence}], rubric, rubric_met, contradictions, evaluation_model.
     """
 
-    version = 1
+    version = 2                # 2: data judge with a strong model (1 was GEval on the rubric, Gemma)
 
-    def __init__(self, rubric: str, model=None):
-        if model is None:
-            from deepeval.models import OpenRouterModel
-
-            from copilot.config import get_settings
-
-            s = get_settings()
-            model = OpenRouterModel(model=s.fallback_model, api_key=s.openrouter_api_key)
-        super().__init__(name="Judge", criteria=rubric, model=model, async_mode=False,
-                         evaluation_params=[SingleTurnParams.INPUT, SingleTurnParams.ACTUAL_OUTPUT])
+    def __init__(self, must_include: list[str | list[str]], rubric: str | None, model: str | None = None):
+        self.facts = [i if isinstance(i, str) else " | ".join(i) for i in must_include]
         self.rubric = rubric
+        self.evaluation_model = model or judge_model()
+        self.threshold = 1.0
+        self.details = {}
 
-    @property
-    def details(self) -> dict:
-        return {"rubric": self.rubric, "evaluation_model": self.evaluation_model}
+    def measure(self, test_case: LLMTestCase, *args, **kwargs) -> float:
+        from copilot.llm import chat_model
+
+        tools = "\n".join(f'{t["name"]}: {t["text"][:6000]}'
+                          for t in (test_case.metadata or {}).get("tool_results", [])) or "(none)"
+        prompt = JUDGE_PROMPT.format(
+            question=test_case.input, answer=test_case.actual_output or "(empty)", tools=tools[:20000],
+            facts="\n".join(f"- {f}" for f in self.facts) or "(none)", rubric=self.rubric or "(none)")
+        llm = chat_model(self.evaluation_model).with_structured_output(Verdict, method="function_calling")
+        v: Verdict = llm.invoke(prompt)
+
+        items = [f.stated for f in v.facts] + ([v.rubric_met] if self.rubric and v.rubric_met is not None else [])
+        self.score = sum(items) / len(items) if items else 1.0
+        self.success = all(items) and not v.contradictions
+        self.details = {"facts": [f.model_dump() for f in v.facts], "rubric": self.rubric,
+                        "rubric_met": v.rubric_met, "contradictions": v.contradictions,
+                        "evaluation_model": self.evaluation_model}
+        missing = [f.fact for f in v.facts if not f.stated]
+        problems = ([f"missing: {', '.join(missing)}"] if missing else []) + \
+                   (["rubric not met"] if self.rubric and v.rubric_met is False else []) + \
+                   ([f"contradicts: {'; '.join(v.contradictions)}"] if v.contradictions else [])
+        self.reason = "; ".join(problems) or v.reason
+        return self.score
 
     @property
     def __name__(self):
         return "Judge"
+
+
+def judge_model() -> str:
+    """JUDGE_MODEL from the environment (an OpenRouter model ID)."""
+    from copilot.config import get_settings
+
+    get_settings()                                    # loads .env
+    return os.getenv("JUDGE_MODEL") or DEFAULT_JUDGE_MODEL
 
 
 class Skipped(_Sync, BaseMetric):
@@ -204,9 +278,9 @@ class Skipped(_Sync, BaseMetric):
         return self.name
 
 
-def judge_metric(rubric: str) -> GEval:
-    """The Judge for one rubric."""
-    return Judge(rubric)
+def judge_metric(case) -> Judge:
+    """The Judge for one case."""
+    return Judge(case.must_include, case.rubric)
 
 
 def build_metrics(case, judge: bool) -> list[BaseMetric]:
@@ -217,9 +291,9 @@ def build_metrics(case, judge: bool) -> list[BaseMetric]:
 def _judge(case, judge: bool) -> BaseMetric:
     if not judge:
         return Skipped("Judge", Judge.version, "no --judge")
-    if not case.rubric:
-        return Skipped("Judge", Judge.version, "no rubric")
-    return judge_metric(case.rubric)
+    if not case.rubric and not case.must_include:
+        return Skipped("Judge", Judge.version, "nothing to judge")
+    return judge_metric(case)
 
 
 # (case, judge flag) -> metric. Order = the columns of the report.

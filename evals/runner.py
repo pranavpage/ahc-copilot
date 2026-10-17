@@ -28,7 +28,7 @@ from copilot.api import Answer
 from copilot.config import ROOT, get_settings
 from evals import schema
 from evals.cases import EvalCase
-from evals.metrics import METRIC_VERSIONS, build_metrics, make_test_case
+from evals.metrics import METRIC_VERSIONS, build_metrics, judge_model, make_test_case
 from evals.schema import Status
 
 Ask = Callable[..., Answer]
@@ -243,7 +243,7 @@ class Runner:
             "started_at": _now(), "git": gi,
             "ask": os.getenv("EVAL_ASK", "copilot.api:ask"),
             "model": s.model, "fallback_model": s.fallback_model,
-            "judge": self.judge, "judge_model": s.fallback_model if self.judge else None,
+            "judge": self.judge, "judge_model": judge_model() if self.judge else None,
             "metric_versions": METRIC_VERSIONS,
             **db_info(),
             "cases": sorted(self.selected or self.cases, key=_case_order),
