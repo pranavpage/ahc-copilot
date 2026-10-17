@@ -68,13 +68,17 @@ def _area_names() -> dict[str, str]:
 # OPS-1 gas odor response
 # ----------------------------------------------------------------------------
 
-def gas_reports(start: str, end: str | None = None, area: str | None = None) -> ToolResult:
+def gas_reports(start: str, end: str | None = None, area: str | None = None,
+                asset_id: str | None = None) -> ToolResult:
     """Every operator note reporting gas (gas odor, rotten-egg smell, H2S alarm) written between
     start and end (inclusive, default today), and whether a field response met the OPS-1 deadline.
 
     Rule (Operations SOP rev 2, OPS-1): the response is the FIRST maintenance job on that well
     (started_at) or MANUAL inspection of that well (drone inspections do not count) that starts
     after the note's created_at. Deadline 24 h for notes before 1 Jan 2027, 12 h from 1 Jan 2027.
+    Also answers "what was the H2S reading" for a gas report: `h2s_max_ppm` is the highest
+    personal-monitor reading in the response job's repair report (WS-03); no response = no
+    reading was taken after the report. Filter one well with asset_id.
     result: Met | Missed (no response, or later than the deadline) | Pending (no response yet
     and the deadline has not passed today).
     One row per report: asset_id, area, note_id, reported_at, note_text, response_id,
@@ -94,7 +98,8 @@ def gas_reports(start: str, end: str | None = None, area: str | None = None) -> 
         WHERE n.event = 'gas_odor' AND substr(n.created_at, 1, 10) >= :start
           AND (:end IS NULL OR substr(n.created_at, 1, 10) <= :end)
           AND (:area_id IS NULL OR w.area_id = :area_id)
-        ORDER BY n.created_at, n.asset_id""", {"start": start, "end": end, "area_id": area_id})
+          AND (:asset_id IS NULL OR n.asset_id = :asset_id)
+        ORDER BY n.created_at, n.asset_id""", {"start": start, "end": end, "area_id": area_id, "asset_id": asset_id})
 
     now = _now()
     rows, ids = [], [CITE_OPS1]
@@ -116,12 +121,15 @@ def gas_reports(start: str, end: str | None = None, area: str | None = None) -> 
         if resp:
             r = resp[0]
             hours = _hours(created, _ts(r["at"]))
+            h2s = db.rows("SELECT h2s_max_ppm FROM maintenance_reports WHERE maintenance_id = ?", (r["id"],))
             row |= {"response_id": r["id"], "response_kind": r["kind"], "response_at": _fmt(_ts(r["at"])),
-                    "hours_to_response": hours}
+                    "hours_to_response": hours, "h2s_max_ppm": h2s[0]["h2s_max_ppm"] if h2s else None}
             row["result"] = "Met" if hours <= deadline else "Missed"
             ids.append(r["id"])
         else:
             row["response_id"] = "none"
+            row["h2s_max_ppm"] = None
+            row["h2s_note"] = "no field response after the report, so no H2S reading was taken"
             row["result"] = "Pending" if created + timedelta(hours=deadline) > now else "Missed"
         rows.append(row)
         ids.append(n["note_id"])
@@ -448,15 +456,15 @@ RIG_WAIT = re.compile(
 
 
 def waiting_reasons(start: str, end: str, area: str | None = None,
-                    include_interim: bool = False, rig: str = "by_owner") -> ToolResult:
+                    include_interim: bool = False) -> ToolResult:
     """What repairs waited on when the well stayed shut in longer than the repair itself.
 
     For jobs STARTED between start and end (inclusive), from two report sentences:
     - "The well stayed shut in for about N days longer than the repair itself because ..."
       (parts back-ordered, crew committed elsewhere, weekday contractor slot, rain/weather), and
     - "<owner>'s workover rig was busy on other wells, so the well waited about N days for it".
-    rig="by_owner" (default) counts a busy company rig as crews and a busy contractor's rig as
-    contractors; rig="separate" keeps "workover rig" as its own reason.
+    A busy company rig counts as crews and a busy contractor's rig as contractors, so every wait
+    falls in one of the four reasons asked about: parts, crews, contractors, weather.
     Interim reports ("expected to stay shut in", job still in progress) are excluded unless
     include_interim=True.
     One row per area x reason (plus area = "All areas"): area, reason, jobs, share_pct (of that
@@ -466,8 +474,7 @@ def waiting_reasons(start: str, end: str, area: str | None = None,
     kind = "waiting_reasons"
     if note := _date_note(start=start, end=end):
         return _empty(kind, note)
-    if rig not in ("by_owner", "separate"):
-        return _empty(kind, f"unknown rig '{rig}'; use 'by_owner' or 'separate'")
+    rig = "by_owner"
     area_id, note = _area_filter(area)
     if note:
         return _empty(kind, note)
