@@ -75,6 +75,15 @@ Questions to try (the expected answers are in `evals/cases.yaml`):
 | How many days was WELL-0001 down in 2025? | 21 days |
 | How many oil spills has WELL-0001 had in the last 4 years, and how much oil in total? List them in a table. | 6 spills, 15.1 bbl, the rainwater correction |
 
+### 4. Chat in the browser
+
+```bash
+uv run streamlit run ui/app.py
+```
+
+Pick the user in the sidebar. Each answer shows the text, the visual, the sources and "How I got this"
+(the tool calls). "New chat" starts a new thread.
+
 Users (`--user`): U-201 Michael Turner (production supervisor, the default), U-202 Jessica Reed
 (inspector), U-102 Jake Morales (operator), U-301 Robert Hayes (maintenance lead), U-401 Laura Simmons
 (HSE officer). All users: `sqlite3 data/copilot.db "select * from users"`.
