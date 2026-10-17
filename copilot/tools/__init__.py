@@ -1,7 +1,8 @@
 """The agent's tools. A1 and A2 edit only their own module, never this file."""
 
 from copilot.tools.base import ToolResult
-from copilot.tools.records import search_docs, spills, well_records
+from copilot.tools.feedback import FEEDBACK_TOOLS
+from copilot.tools.records import find_mentions, rca_due, repair_costs, search_docs, spills, well_records
 from copilot.tools.status import downtime, inspection_series, well_status
 from copilot.tools.visual import VisualSpec, show_visual
 from copilot.tools.wells import identify_well
@@ -13,8 +14,12 @@ ALL_TOOLS = [
     downtime,
     spills,
     well_records,
+    repair_costs,
+    rca_due,
     search_docs,
+    find_mentions,
     show_visual,
 ]
 
-__all__ = ["ALL_TOOLS", "ToolResult", "VisualSpec"]
+# Tools that write (corrections, notes, rules). They read the user from the run config.
+__all__ = ["ALL_TOOLS", "FEEDBACK_TOOLS", "ToolResult", "VisualSpec"]

@@ -137,7 +137,8 @@ Expect Q9 (rules broken) to be the last one to pass. It needs records + reports 
    - **Corrections and user rules: keep in the SQL tables** (`corrections`, `rules`). They change
      calculations (downtime, producing, spill class) and the SQL views apply them automatically. In the
      LG store, every tool would have to apply them in Python before each aggregation.
-   - Tools: `record_correction`, `add_note`, `set_rule` (to do), `recall_conversations` (done).
+   - Tools (done): `record_correction`, `add_note`, `set_rule` (`copilot/tools/feedback.py`),
+     `recall_conversations`.
    - Eval cases get `turns: [{user, message}]` and a fresh store per case.
 7. **UI: Streamlit, with a fixed generative-UI catalog. Details: `PLAN-UI.md`.** All Python, same process as the agent. `st.chat_message` for chat, a user picker in
    the sidebar. One render function per `show_visual` type: card = `st.metric` in a bordered container,

@@ -17,6 +17,12 @@ def test_prompt_names_the_user():
     assert "not identified (no user ID)" in build_system_prompt()
 
 
+def test_prompt_lists_period_starts():
+    prompt = build_system_prompt("U-201")
+    assert "last 13 weeks 2026-07-17" in prompt and "last 90 days 2026-07-18" in prompt
+    assert "last 4 months 2026-06-16" in prompt and "this year 2026-01-01" in prompt
+
+
 def test_entities_in_order_of_mention():
     text = "Top 3 in Northeast Block 7: WELL-0121 (49 days), WELL-0138, WELL-0107. MNT-0121-001. WELL-0121 again."
     assert memory.entities(text) == [("area", "NE-07"), ("well", "WELL-0121"), ("well", "WELL-0138"),

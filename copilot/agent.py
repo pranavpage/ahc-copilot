@@ -4,27 +4,32 @@
 `get_graph()` is the in-process graph with an InMemorySaver, used by `copilot.api.ask`.
 Thread: config["configurable"]["thread_id"]. User: config["configurable"]["user_id"] (in-process)
 or the `x-user-id` request header (LangGraph server, sent by the web UI).
-`remember` runs after each model call and indexes finished turns for `recall_conversations`.
+Graph: agent (the ReAct loop) -> verify -> remember. `verify` checks the answer against the tool
+results (copilot/verify.py); a failed answer goes back to the agent once with the problems.
+`remember` indexes the final answer for `recall_conversations`.
 """
 
 import inspect
 import json
 import os
 import threading
+import uuid
 import warnings
 from functools import lru_cache, wraps
 
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import create_react_agent
 
-from copilot import memory, results
+from copilot import memory, results, verify as verifier
 from copilot.api import _text
 from copilot.llm import get_llm
 from copilot.prompt import build_system_prompt
-from copilot.tools import ALL_TOOLS, ToolResult
+from copilot.tools import ALL_TOOLS, FEEDBACK_TOOLS, ToolResult
+from copilot.tools.base import run_context
 from copilot.tools.visual import show_visual
 from copilot.tools.wells import well_id
 
@@ -33,6 +38,8 @@ warnings.filterwarnings("ignore", message="create_react_agent has been moved")
 
 MODEL_ROWS = 50            # rows of a tool result sent to the model; the rest stay in the result store
 RECURSION_LIMIT = 30
+MAX_REVISIONS = 1          # a failed answer goes back to the model this many times
+VERIFY = os.getenv("VERIFY", "1") != "0"
 
 # Merge the system prompt into the first user message, for models that reject the system role.
 MERGE_SYSTEM_PROMPT = os.getenv("MERGE_SYSTEM_PROMPT", "") == "1"
@@ -121,15 +128,6 @@ def visual_tool() -> StructuredTool:
     )
 
 
-def _configurable(config: RunnableConfig | None) -> dict:
-    """The run's configurable, with `user_id` filled from the `x-user-id` header on the LangGraph
-    server (the server copies x-* request headers into configurable; the web UI sends it)."""
-    c = dict((config or {}).get("configurable") or {})
-    # The server also sets user_id = "" (its auth user, empty without auth), so the header wins.
-    c["user_id"] = c.get("x-user-id") or c.get("user_id") or None
-    return c
-
-
 def recall_conversations(query: str | None = None, limit: int = 5, *, config: RunnableConfig) -> ToolResult:
     """The current user's earlier conversations, newest first (never another user's).
 
@@ -140,7 +138,7 @@ def recall_conversations(query: str | None = None, limit: int = 5, *, config: Ru
     IDs, areas, topics). "Yesterday" means their most recent earlier conversation; the date does
     not have to match exactly. Say which conversation you used.
     """
-    c = _configurable(config)
+    c = run_context(config)
     user_id = c.get("user_id")
     if not memory.user_profile(user_id):
         return ToolResult(result_id="", kind="recall_conversations", rows=[], ids=[],
@@ -153,7 +151,7 @@ def recall_conversations(query: str | None = None, limit: int = 5, *, config: Ru
 
 def build_tools() -> list[StructuredTool]:
     tools = [visual_tool() if fn is show_visual else data_tool(fn) for fn in ALL_TOOLS]
-    return [*tools, data_tool(recall_conversations)]
+    return [*tools, *map(data_tool, FEEDBACK_TOOLS), data_tool(recall_conversations)]
 
 
 def _turn_text(messages: list[AnyMessage]) -> tuple[str, str]:
@@ -167,11 +165,11 @@ def _turn_text(messages: list[AnyMessage]) -> tuple[str, str]:
 
 
 def remember(state, config: RunnableConfig) -> dict:
-    """After each model call: when the turn is finished (no tool calls), index it for later chats."""
+    """At the end of the turn: index the final answer for later chats."""
     messages = state["messages"]
     if not messages or not isinstance(messages[-1], AIMessage) or messages[-1].tool_calls:
         return {}
-    c = _configurable(config)
+    c = run_context(config)
     question, answer = _turn_text(messages)
     try:
         memory.remember(c.get("thread_id"), c.get("user_id"), question, answer)
@@ -180,9 +178,50 @@ def remember(state, config: RunnableConfig) -> dict:
     return {}
 
 
+def _revision_request(record: dict, draft: str) -> str:
+    return ("Your answer did not pass the check against the tool results:\n"
+            + "\n".join(f"- {p}" for p in record["problems"])
+            + f'\n\nYour answer was:\n"""\n{draft}\n"""\n\n'
+            "Write the full corrected answer; the user sees only the new one. Use only facts from the tool "
+            "results, and call a tool if you need more data. Do not call verify_answer.")
+
+
+def verify(state, config: RunnableConfig) -> dict:
+    """Check the answer (copilot/verify.py). The answer text moves after a `verify_answer` tool call
+    whose result is the check record, so the history stays valid and the UI shows the check.
+    A failed answer goes back to the agent with the problems, MAX_REVISIONS times."""
+    messages = state["messages"]
+    final = messages[-1] if messages else None
+    if not VERIFY or not isinstance(final, AIMessage) or final.tool_calls:
+        return {}
+    record = verifier.check(messages, build_system_prompt(run_context(config).get("user_id")))
+    done_rounds = verifier.rounds(messages)
+    record["round"] = done_rounds + 1
+    answer = verifier.answer_message(messages)
+    draft = _text(answer) if answer else ""
+    call_id = f"verify_{uuid.uuid4().hex[:8]}"
+    updates: list[AnyMessage] = []
+    if answer is not None and answer.id != final.id:
+        updates.append(answer.model_copy(update={"content": ""}))
+    updates.append(AIMessage(id=final.id, content="", response_metadata=final.response_metadata,
+                             tool_calls=[{"name": verifier.TOOL_NAME, "args": {}, "id": call_id, "type": "tool_call"}]))
+    if record["status"] == "passed" or done_rounds >= MAX_REVISIONS:
+        record["summary"] = verifier.summary(record)
+        updates.append(ToolMessage(json.dumps(record), tool_call_id=call_id, name=verifier.TOOL_NAME, artifact=record))
+        updates.append(AIMessage(draft, response_metadata=final.response_metadata))
+    else:
+        updates.append(ToolMessage(_revision_request(record, draft), tool_call_id=call_id,
+                                   name=verifier.TOOL_NAME, artifact=record))
+    return {"messages": updates}
+
+
+def _after_verify(state) -> str:
+    return "agent" if isinstance(state["messages"][-1], ToolMessage) else "remember"
+
+
 def _prompt(state, config: RunnableConfig) -> list[AnyMessage]:
     """System prompt built at each model call, so it follows the current DB_PATH and user."""
-    system = build_system_prompt(_configurable(config).get("user_id"))
+    system = build_system_prompt(run_context(config).get("user_id"))
     messages = list(state["messages"])
     if not MERGE_SYSTEM_PROMPT:
         return [SystemMessage(system), *messages]
@@ -194,11 +233,18 @@ def _prompt(state, config: RunnableConfig) -> list[AnyMessage]:
 
 
 def make_graph(model=None, checkpointer=None):
-    """The ReAct agent. `model` defaults to get_llm() (MODEL with FALLBACK_MODEL)."""
-    return create_react_agent(
-        model if model is not None else get_llm(), build_tools(), prompt=_prompt,
-        post_model_hook=remember, checkpointer=checkpointer,
-    ).with_config(recursion_limit=RECURSION_LIMIT)
+    """agent (ReAct: the model and the tools) -> verify -> remember. `model` defaults to get_llm()
+    (MODEL with FALLBACK_MODEL)."""
+    agent = create_react_agent(model if model is not None else get_llm(), build_tools(), prompt=_prompt)
+    g = StateGraph(MessagesState)
+    g.add_node("agent", agent)
+    g.add_node("verify", verify)
+    g.add_node("remember", remember)
+    g.add_edge(START, "agent")
+    g.add_edge("agent", "verify")
+    g.add_conditional_edges("verify", _after_verify, ["agent", "remember"])
+    g.add_edge("remember", END)
+    return g.compile(checkpointer=checkpointer).with_config(recursion_limit=RECURSION_LIMIT)
 
 
 _graph_lock = threading.Lock()

@@ -22,6 +22,7 @@ class Answer(BaseModel):
     model: str                 # the model that answered (main or fallback)
     error: str | None
     trace: list[dict] = []     # every step of the turn, in order (see _step)
+    verification: dict | None = None   # the last check of the answer (copilot/verify.py)
 
 
 def _text(message: BaseMessage) -> str:
@@ -60,12 +61,15 @@ def build_answer(turn: list[BaseMessage]) -> Answer:
     tool_messages = {m.tool_call_id: m for m in turn if isinstance(m, ToolMessage)}
     ai_messages = [m for m in turn if isinstance(m, AIMessage)]
 
-    tool_calls, blocks, citations = [], [], {}
+    tool_calls, blocks, citations, verification = [], [], {}, None
     for ai in ai_messages:
         for call in ai.tool_calls:
             reply = tool_messages.get(call["id"])
             artifact = reply.artifact if reply is not None and isinstance(reply.artifact, dict) else {}
             result_id = None
+            if call["name"] == "verify_answer":     # the check of the answer, not a data tool
+                verification = artifact or None
+                continue
             if call["name"] == "show_visual":
                 if artifact and "error" not in artifact:
                     blocks.append(artifact)
@@ -81,7 +85,7 @@ def build_answer(turn: list[BaseMessage]) -> Answer:
     model = (final.response_metadata.get("model_name") if final else None) or get_settings().model
     return Answer(answer=texts[-1] if texts else "", blocks=blocks, citations=list(citations),
                   tool_calls=tool_calls, model=model, error=None,
-                  trace=[step for step in map(_step, turn) if step is not None])
+                  trace=[step for step in map(_step, turn) if step is not None], verification=verification)
 
 
 def ask(question: str, user_id: str, thread_id: str | None = None) -> Answer:

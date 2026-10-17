@@ -37,7 +37,7 @@ def test_well_status_area_not_producing():
     assert {"MNT-0170-031", "MNT-0172-028"} <= set(r.ids)
     for well in ("WELL-0164", "WELL-0175"):
         assert "reason" in rows[well] and rows[well]["reason"] is None
-        assert f"{well}: no recorded reason" in r.notes
+        assert any(n.startswith(f"{well}: no recorded reason") for n in r.notes)
     assert all(row["area_name"] == "Northeast Block 8" for row in r.rows)
 
 
@@ -124,3 +124,14 @@ def test_results_stored(call):
     r = call()
     assert r.result_id
     assert results.get(r.result_id) == r.rows
+
+
+def test_downtime_one_well_explains_each_stop():
+    from copilot.tools.status import downtime
+
+    w = downtime("2025-01-01", "2025-12-31", asset_id="WELL-0001").rows[0]
+    assert w["downtime_days"] == 21
+    first = w["down_details"][0]
+    assert (first["wellhead_temp_c"], first["ambient_temp_c"], first["temp_delta_c"]) == (51.6, 43.1, 8.5)
+    assert [m["maintenance_id"] for d in w["down_details"] for m in d["repairs"]] == [
+        "MNT-0001-021", "MNT-0001-023", "MNT-0001-023"]

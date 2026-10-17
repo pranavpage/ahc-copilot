@@ -3,7 +3,7 @@
 import pytest
 
 from copilot import results
-from copilot.tools.records import search_docs, spills, well_records
+from copilot.tools.records import rca_due, repair_costs, search_docs, spills, well_records
 
 
 def by_asset(rows):
@@ -195,4 +195,63 @@ def test_search_docs_fts_syntax_is_safe(query):
 def test_search_docs_asset_filter():
     r = search_docs("flowline leak", asset_id="WELL-0001", limit=20)
     assert r.rows and all(x["asset_id"] in (None, "WELL-0001") for x in r.rows)
-    assert len(search_docs("flowline", limit=3).rows) == 3
+    r = search_docs("flowline", limit=3)
+    kinds = [x["kind"] for x in r.rows]
+    assert kinds.count("doc_section") == 3 and len(kinds) == 6     # manuals are never crowded out
+
+
+def test_search_docs_manuals_not_crowded_out():
+    cites = [x["cite"] for x in search_docs("pressure test").rows]
+    assert "field-work-sop §3. Protocols" in cites and any(c.startswith("MNT-") for c in cites)
+
+
+# ----------------------------------------------------------------------------
+# filters and context for the answers (Q4, Q8, Q9, Q10, Q18)
+# ----------------------------------------------------------------------------
+
+def test_spills_cancelled_note_gives_the_reason():
+    note = next(n for n in spills(asset_id="WELL-0001").notes if "cancelled" in n)
+    assert "INS-0001-0070" in note and "CTX-0001-001" in note and "rainwater" in note
+
+
+def test_spills_not_contained_only():
+    r = spills(area="SW-24", start="2026-07-18", end="2026-10-16", not_contained_only=True)
+    assert [x["asset_id"] for x in r.rows] == ["WELL-0100", "WELL-0082"]
+    assert all(x["contained_in_time"] is False for x in r.rows)
+
+
+def test_spills_carry_the_notes_that_name_them():
+    r = spills(asset_id="WELL-0101", start="2026-08-20", end="2026-08-20")
+    assert [n["note_id"] for n in r.rows[0]["notes_on_spill"]] == ["CTX-0101-002", "CTX-0101-003"]
+    assert {"CTX-0101-002", "CTX-0101-003"} <= set(r.ids)
+
+
+def test_spills_heatmap_totals_per_area():
+    r = spills(start="2026-01-01", end="2026-12-31", group_by=["area", "month"])
+    assert any("Southwest Block 24 43" in n and "Northeast Block 8 26" in n for n in r.notes)
+
+
+def test_well_records_only_findings_with_volume_and_fine():
+    r = well_records("WELL-0001", "2025-10-16", "2026-10-16", sections=["findings"])
+    assert {x["section"] for x in r.rows} == {"findings"}
+    sr01 = next(x for x in r.rows if x["rule"] == "SR-01")
+    assert "6.8 bbl" in sr01["detail"]
+    assert "fine USD 5000" in next(x for x in r.rows if x["rule"] == "RC-04")["detail"]
+
+
+# ----------------------------------------------------------------------------
+# repair_costs, rca_due (Q11, Q14)
+# ----------------------------------------------------------------------------
+
+def test_repair_costs_totals_per_well():
+    r = repair_costs(["WELL-0121", "WELL-0138", "WELL-0107"], "2026-01-01", "2026-10-16")
+    assert {x["asset_id"]: x["cost_total_usd"] for x in r.rows} == {
+        "WELL-0121": 25794, "WELL-0138": 46942, "WELL-0107": 5176}
+    assert "unknown" in repair_costs(["WELL-9999"], "2026-01-01", "2026-10-16").notes[0]
+
+
+def test_rca_due_pump_jack_ne07():
+    r = rca_due(area="Northeast Block 7", equipment_kind="pump_jack")
+    assert [x["asset_id"] for x in r.rows] == ["WELL-0108", "WELL-0121", "WELL-0138"]
+    assert all(x["corrective_repairs"] >= x["rca_limit"] for x in r.rows)
+    assert "T200: 3" in r.notes[0] and "T350: 3" in r.notes[0]
