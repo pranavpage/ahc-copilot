@@ -80,3 +80,43 @@ def test_agent_remembers_and_recalls_per_user(use_model):  # noqa: F811
     api.ask("For the three wells we discussed yesterday, what have repairs cost?", "U-202", "t-jess")
     body = tool_reply("t-jess", "c3")
     assert all(r["conversation_id"] not in ("t-day1", "t-day2") for r in body["rows"])
+
+
+def test_my_wells_are_the_wells_of_my_team():
+    """A well's own team beats its area's team (test data: 10 wells of SW-24 moved to Southeast)."""
+    import os
+    import sqlite3
+    import tempfile
+    from contextlib import closing
+    from pathlib import Path
+
+    import pytest
+
+    from copilot.config import get_settings
+
+    test_db = Path(__file__).resolve().parents[1] / "data" / "copilot.db"
+    if not test_db.exists():
+        pytest.skip("data/copilot.db not built")
+    old = os.environ.get("DB_PATH")
+    with tempfile.TemporaryDirectory() as tmp:
+        dst = Path(tmp) / "copilot.db"
+        with closing(sqlite3.connect(f"file:{test_db}?mode=ro", uri=True)) as a, closing(sqlite3.connect(dst)) as b:
+            a.backup(b)
+        os.environ["DB_PATH"] = str(dst)
+        get_settings.cache_clear()
+        try:
+            olivia = memory.user_profile("U-501")          # Southeast Production
+            areas = {a["area_id"]: a for a in olivia["areas"]}
+            moved = db.rows("SELECT COUNT(*) AS n FROM wells WHERE team_id = 'TEAM-SE' AND area_id = 'SW-24'")[0]["n"]
+            assert moved > 0 and areas["SW-24"]["team_wells"] == moved
+            assert olivia["team_wells"] == db.rows("SELECT COUNT(*) AS n FROM wells WHERE team_id = 'TEAM-SE'")[0]["n"]
+            emily = memory.user_profile("U-101")           # Southwest Production keeps the rest of SW-24
+            sw24 = next(a for a in emily["areas"] if a["area_id"] == "SW-24")
+            assert sw24["team_wells"] == sw24["area_wells"] - moved
+            assert f"{moved} of its" in build_system_prompt("U-501")
+        finally:
+            if old is None:
+                os.environ.pop("DB_PATH", None)
+            else:
+                os.environ["DB_PATH"] = old
+            get_settings.cache_clear()
