@@ -21,6 +21,7 @@ from copilot.llm import get_llm
 from copilot.prompt import build_system_prompt
 from copilot.tools import ALL_TOOLS, ToolResult
 from copilot.tools.visual import show_visual
+from copilot.tools.wells import well_id
 
 # create_react_agent moved to `langchain.agents` (not a dependency); the langgraph one still works.
 warnings.filterwarnings("ignore", message="create_react_agent has been moved")
@@ -52,12 +53,30 @@ def _for_model(res: ToolResult) -> dict:
     return out
 
 
+def _clean_well_args(kwargs: dict) -> list[str]:
+    """Turn "0001", "well 1", … in `asset_id` / `asset_ids` into well IDs, in place. Returns notes."""
+    notes = []
+
+    def clean(value):
+        a = well_id(value) if isinstance(value, str) else None
+        if a and a != value:
+            notes.append(f"'{value}' read as {a}")
+        return a or value
+
+    if kwargs.get("asset_id"):
+        kwargs["asset_id"] = clean(kwargs["asset_id"])
+    if kwargs.get("asset_ids"):
+        kwargs["asset_ids"] = [clean(v) for v in kwargs["asset_ids"]]
+    return notes
+
+
 def data_tool(fn) -> StructuredTool:
     """Wrap a data tool. The model sees compact JSON; the artifact keeps result_id, ids and notes."""
 
     @wraps(fn)
     def run(**kwargs):
         try:
+            id_notes = _clean_well_args(kwargs)
             res = fn(**kwargs)
             res = res if isinstance(res, ToolResult) else ToolResult.model_validate(res)
         except Exception as e:  # noqa: BLE001 - the model gets the error, the agent keeps going
@@ -65,6 +84,7 @@ def data_tool(fn) -> StructuredTool:
             return _dumps({"error": error}), {"result_id": None, "ids": [], "error": error}
         if not res.result_id:
             res.result_id = results.put(res.kind, res.rows)
+        res.notes = id_notes + list(res.notes)
         artifact = {"result_id": res.result_id, "ids": res.ids, "notes": res.notes}
         return _dumps(_for_model(res)), artifact
 

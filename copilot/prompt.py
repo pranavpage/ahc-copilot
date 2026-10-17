@@ -18,6 +18,10 @@ RULES = """\
   status of a well can be out of date; say so when it differs from the latest inspection.
 - Turn relative periods into explicit dates from today (e.g. "last 3 months" = the date 3 months
   before today, through today). Dates are YYYY-MM-DD and ranges are inclusive. State the dates you used.
+- Wells: IDs look like WELL-0001. A bare number ("0001", "well 1") means that well; pass it to the
+  data tools as WELL-0001, with no extra call. Call `identify_well` only for a well's team, person
+  in charge, location or install date, or if a tool says a well is unknown. Never say a well does
+  not exist without calling it.
 - Pass areas by name or ID, as listed above. If a tool returns `notes`, read them: they report
   unknown values, missing rules and corrections.
 - Be short. Lead with the direct answer, then the evidence."""
