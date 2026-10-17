@@ -219,7 +219,8 @@ class Runner:
     """Runs each case at most once per session, after the cases it follows.
 
     `selected`: the case IDs asked for. A selected case is never marked as a dependency, even
-    when another case runs it first. `run_all` runs independent chains of cases in parallel.
+    when another case runs it first. `run_all` runs stateless cases in parallel, then the
+    `serial` chains one at a time.
     """
 
     def __init__(self, cases: list[EvalCase], ask: Ask, judge: bool = False,
@@ -303,18 +304,36 @@ class Runner:
             groups.setdefault(find(c), []).append(c)
         return sorted(groups.values(), key=lambda g: schema.case_order(g[0]))
 
-    def run_all(self, case_ids: list[str] | None = None, workers: int = WORKERS) -> None:
-        """Run the cases, `workers` chains at a time. Within a chain, cases run one by one
-        (`result` runs what a case follows first). Results stay cached for `result`."""
+    def serial(self, chain: list[str]) -> bool:
+        """True if the chain keeps state across turns or cases (memory, notes, corrections):
+        more than one case (linked by `follows`), or a case with more than one turn."""
+        return len(chain) > 1 or any(len(turns(self.cases[c])) > 1 for c in chain)
+
+    def run_all(self, case_ids: list[str] | None = None, workers: int = WORKERS,
+                reset: Callable[[], None] | None = None) -> None:
+        """Run the cases in two parts. Results stay cached for `result`.
+
+        Part 1: chains that keep no state (one case, one turn), `workers` at a time.
+        Part 2: the `serial` chains, one at a time, cases in order (`result` runs what a case
+        follows first). `reset` puts the database back as it was before the run: before part 2
+        (so part 1's memory rows are gone) and after each part-2 chain (so its writes are undone).
+        """
         ids = list(case_ids if case_ids is not None else self.selected or self.cases)
 
         def run_chain(chain: list[str]) -> None:
             for c in chain:
                 self.result(c, as_dependency=c not in ids)
 
+        chains = self.chains(ids)
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-            for future in [pool.submit(run_chain, ch) for ch in self.chains(ids)]:
+            for future in [pool.submit(run_chain, ch) for ch in chains if not self.serial(ch)]:
                 future.result()
+        for chain in [ch for ch in chains if self.serial(ch)]:
+            if reset:
+                reset()
+            run_chain(chain)
+            if reset:
+                reset()
 
     def result(self, case_id: str, as_dependency: bool = False) -> CaseResult:
         if self.selected is not None and case_id in self.selected:
@@ -366,6 +385,13 @@ class Runner:
         return res
 
 
+def _copy_db(src: Path, dst: Path) -> None:
+    """Copy the database `src` over `dst` (every table), with SQLite's backup API."""
+    with closing(sqlite3.connect(f"file:{src}?mode=ro", uri=True)) as a, \
+         closing(sqlite3.connect(dst)) as b:
+        a.backup(b)
+
+
 @contextmanager
 def isolated_db():
     """Point DB_PATH at a temp copy of the database, so eval writes never reach the real one."""
@@ -375,9 +401,7 @@ def isolated_db():
     old = os.environ.get("DB_PATH")
     with tempfile.TemporaryDirectory(prefix="copilot-eval-") as tmp:
         dst = Path(tmp) / src.name
-        with closing(sqlite3.connect(f"file:{src}?mode=ro", uri=True)) as a, \
-             closing(sqlite3.connect(dst)) as b:
-            a.backup(b)
+        _copy_db(src, dst)
         os.environ["DB_PATH"] = str(dst)
         get_settings.cache_clear()
         try:
@@ -388,3 +412,13 @@ def isolated_db():
             else:
                 os.environ["DB_PATH"] = old
             get_settings.cache_clear()
+
+
+@contextmanager
+def db_snapshot(path: Path):
+    """Snapshot the database at `path`. Yields restore(), which puts the snapshot back and so
+    undoes every write since (memory, notes, corrections). Nothing may write while it runs."""
+    with tempfile.TemporaryDirectory(prefix="copilot-snapshot-") as tmp:
+        snap = Path(tmp) / path.name
+        _copy_db(path, snap)
+        yield lambda: _copy_db(snap, path)

@@ -9,8 +9,8 @@ os.environ.setdefault("DEEPEVAL_TELEMETRY_OPT_OUT", "1")
 from copilot.config import get_settings  # noqa: E402
 from evals import report  # noqa: E402
 from evals.cases import load_cases  # noqa: E402
-from evals.runner import (WORKERS, Runner, get_ask, git_info, isolated_db, new_log_path,  # noqa: E402
-                          new_run_id)
+from evals.runner import (WORKERS, Runner, db_snapshot, get_ask, git_info, isolated_db,  # noqa: E402
+                          new_log_path, new_run_id)
 from evals.schema import group_of, pass_line  # noqa: E402
 
 _runner = pytest.StashKey[Runner]()
@@ -24,8 +24,8 @@ def pytest_addoption(parser):
     group.addoption("--cases", default=None,
                     help="only these cases: a group (A1 = Q1–Q10, A2 = Q11–Q18) or IDs, e.g. Q1,Q3")
     group.addoption("--workers", type=int, default=int(os.getenv("EVAL_WORKERS", WORKERS)),
-                    help=f"cases run in parallel (chains linked by `follows` stay in order; "
-                         f"default {WORKERS}, env EVAL_WORKERS; 1 = one at a time)")
+                    help=f"stateless cases run in parallel (default {WORKERS}, env EVAL_WORKERS; "
+                         f"1 = one at a time); stateful chains always run one at a time")
 
 
 def selected_cases(option: str | None):
@@ -47,14 +47,15 @@ def pytest_generate_tests(metafunc):
 @pytest.fixture(scope="session")
 def runner(request):
     """One runner per session, on a temp copy of the database. Writes run_start and run_end.
-    Runs every selected case up front, in parallel; the tests then read the cached results."""
+    Runs every selected case up front (stateless cases in parallel, then the stateful chains one
+    at a time, each on the snapshot taken here); the tests then read the cached results."""
     source_db = get_settings().db_path
     selected = [c.id for c in selected_cases(request.config.getoption("cases"))]
-    with isolated_db():
+    with isolated_db() as db_path, db_snapshot(db_path) as reset:
         r = Runner(load_cases(), get_ask(), judge=request.config.getoption("judge"),
                    log_path=new_log_path(new_run_id(git_info()["sha"])), selected=selected)
         r.start(argv=list(request.config.invocation_params.args), db_path=source_db)
-        r.run_all(selected, workers=request.config.getoption("workers"))
+        r.run_all(selected, workers=request.config.getoption("workers"), reset=reset)
         request.config.stash[_runner] = r
         yield r
         r.finish()

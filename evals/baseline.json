@@ -1,32 +1,32 @@
 {
-  "run_id": "20261017T095426Z-66f2bfa",
-  "sha": "66f2bfa",
+  "run_id": "20261017T102827Z-433f98f",
+  "sha": "433f98f",
   "model": "google/gemma-4-26b-a4b-it",
   "metric_versions": {
     "FactRecall": 2,
     "VisualMatch": 1,
-    "Judge": 2
+    "Judge": 3
   },
   "cases": {
     "Q1": {
-      "status": "FAIL",
-      "score": 0.9583
+      "status": "PASS",
+      "score": 1.0
     },
     "Q2": {
       "status": "FAIL",
-      "score": 0.8308
+      "score": 0.9697
     },
     "Q3": {
       "status": "FAIL",
-      "score": 0.7833
+      "score": 0.75
     },
     "Q4": {
       "status": "FAIL",
-      "score": 0.9
+      "score": 0.8333
     },
     "Q5": {
       "status": "FAIL",
-      "score": 0.3222
+      "score": 0.4722
     },
     "Q6": {
       "status": "PASS",
@@ -38,31 +38,31 @@
     },
     "Q8": {
       "status": "FAIL",
-      "score": 0.5
+      "score": 0.8333
     },
     "Q9": {
       "status": "FAIL",
-      "score": 0.5421
+      "score": 0.4231
     },
     "Q10": {
-      "status": "FAIL",
-      "score": 0.9259
+      "status": "PASS",
+      "score": 1.0
     },
     "Q11": {
       "status": "FAIL",
-      "score": 0.0
+      "score": 0.25
     },
     "Q12a": {
       "status": "FAIL",
-      "score": 0.4643
+      "score": 0.5
     },
     "Q12b": {
       "status": "FAIL",
-      "score": 0.9444
+      "score": 0.6667
     },
     "Q13": {
       "status": "FAIL",
-      "score": 0.3722
+      "score": 0.4722
     },
     "Q14a": {
       "status": "FAIL",
@@ -70,15 +70,15 @@
     },
     "Q14b": {
       "status": "FAIL",
-      "score": 0.1222
+      "score": 0.2333
     },
     "Q15a": {
       "status": "FAIL",
-      "score": 0.1944
+      "score": 0.4444
     },
     "Q15b": {
       "status": "FAIL",
-      "score": 0.6111
+      "score": 0.5
     },
     "Q16a": {
       "status": "FAIL",
@@ -90,7 +90,7 @@
     },
     "Q17a": {
       "status": "FAIL",
-      "score": 0.475
+      "score": 0.25
     },
     "Q17b": {
       "status": "PASS",
@@ -98,7 +98,7 @@
     },
     "Q18": {
       "status": "FAIL",
-      "score": 0.9375
+      "score": 0.4643
     }
   }
 }
