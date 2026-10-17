@@ -1,6 +1,6 @@
 # Asset Intelligence Copilot
 
-A chat copilot for a synthetic oil field (200 wells, 4 years of history). You ask a question in plain
+A chat copilot for a synthetic oil field (test data: 600 wells, 4 years of history). You ask a question in plain
 English. A ReAct agent (Gemma on OpenRouter, LangGraph) calls typed data tools on a SQLite database,
 writes the answer, cites record IDs and can show one visual (status card, table, chart, map, heatmap).
 
@@ -9,6 +9,9 @@ writes the answer, cites record IDs and can show one visual (status card, table,
 - `db/`: the schema and the loader. The loader builds `data/copilot.db` from the dataset.
 - `evals/`: 18 eval questions (`cases.yaml`), the runner, the metrics and the reports. See [EVALS.md](EVALS.md).
 - `PLAN.md`, `PLAN-UI.md`, `TASKS.md`: the plan and who owns which files.
+- [SUBMISSION.md](SUBMISSION.md): the write-up (architecture on one page) and the answers to the final questions.
+- [DEMO.md](DEMO.md): the 5-minute demo script.
+- `scripts/run_final.py`: runs the 11 final questions and writes the answer sheet.
 
 ## Quickstart
 
