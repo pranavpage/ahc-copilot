@@ -27,9 +27,11 @@ def call(name: str, args: dict, call_id: str) -> dict:
 def use_model(monkeypatch):
     """use_model(*messages): ask() runs on a fake model that replies with these messages."""
 
-    def install(*messages: AIMessage):
+    def install(*messages: AIMessage, verify: bool = False):
+        # The answer check is off by default: scripted answers are short. tests/test_verify.py tests it.
         model = ScriptedModel(messages=iter(messages))
         monkeypatch.setattr(agent, "get_llm", lambda: model)
+        monkeypatch.setattr(agent, "VERIFY", verify)
         agent.get_graph.cache_clear()
 
     yield install

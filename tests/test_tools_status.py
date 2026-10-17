@@ -37,7 +37,7 @@ def test_well_status_area_not_producing():
     assert {"MNT-0170-031", "MNT-0172-028"} <= set(r.ids)
     for well in ("WELL-0164", "WELL-0175"):
         assert "reason" in rows[well] and rows[well]["reason"] is None
-        assert f"{well}: no recorded reason" in r.notes
+        assert any(n.startswith(f"{well}: no recorded reason") for n in r.notes)
     assert all(row["area_name"] == "Northeast Block 8" for row in r.rows)
 
 

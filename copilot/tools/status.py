@@ -186,6 +186,7 @@ def well_status(
         (current if n["valid_from"] <= today else upcoming).setdefault(n.pop("asset_id"), []).append(n)
 
     rows, ids = [], []
+    say = " (say so)" if len(found) <= 10 else ""     # a short list: the answer states each note
     for r in found:
         a = r["asset_id"]
         row = {
@@ -203,22 +204,25 @@ def well_status(
             row["upcoming_notes"] = upcoming[a]
         if row["correction_ids"]:
             row["corrections"] = correction_details(row["correction_ids"])
-            notes += [f"{a}: {correction_note(c)}" for c in row["corrections"]]
+            notes += [f"{a}: {correction_note(c)}{say}" for c in row["corrections"]]
         for n in current.get(a, []) + upcoming.get(a, []):
             if n.get("claim_status") == "unconfirmed":
-                notes.append(f"{a}: unconfirmed claim {n['note_id']} by {n['author_name']}: '{n['text']}'")
+                notes.append(f"{a}: unconfirmed claim {n['note_id']} by {n['author_name']}: '{n['text']}'{say}")
         if row["is_producing"] is None:
             notes.append(f"{a}: no producing rule found")
         elif not row["is_producing"] and not row["open_repairs"] and not row["current_notes"]:
             row["reason"] = None
-            notes.append(f"{a}: no recorded reason")
+            notes.append(f"{a}: no recorded reason; suggest a check{say}")
         rows.append(row)
         ids += [row["inspection_id"], *row["correction_ids"]]
         ids += [m["maintenance_id"] for m in row["open_repairs"]]
         ids += [n["note_id"] for n in row["current_notes"] + row.get("upcoming_notes", [])]
 
+    stale = [r["asset_id"] for r in rows if r["recorded_status_stale"]]
+    if stale:
+        notes.append(f"recorded status out of date (the latest inspection disagrees) for: {', '.join(stale)}{say}")
     if not_producing_only:
-        notes += _left_out_by_corrections(where[:-1], params)
+        notes += [n + say for n in _left_out_by_corrections(where[:-1], params)]
     if not rows and not notes:
         notes.append("no wells match")
     ids += _rule_citations(wells, [PRODUCING_RULE])
@@ -407,6 +411,13 @@ def downtime(
         notes.insert(0, f"downtime = days per not-producing inspection ({rules})")
     if not rows:
         notes.append(f"no downtime between {start} and {end}")
+    details = [d for w in rows for d in w.get("down_details", [])]
+    if 0 < len(details) <= 5:
+        for d in details:
+            fixes = ", ".join(f"{m['maintenance_id']} ({m['issue']})" for m in d["repairs"]) or "no repair recorded"
+            notes.append(f"{d['inspection_id']} ({d['inspected_date']}): wellhead {d['wellhead_temp_c']:.1f} °C vs air "
+                         f"{d['ambient_temp_c']:.1f} °C, only {d['temp_delta_c']:.1f} °C warmer (threshold "
+                         f"{d['producing_threshold_c']:.1f} °C), so not producing; repairs: {fixes} (say so)")
 
     ids = []
     for w in rows:

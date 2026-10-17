@@ -209,7 +209,7 @@ def record_correction(
     rows, ids = [row], [cid, iid]
     flipped = False   # the correction changes whether the well is producing, or whether there was a spill
     notes = [f"recorded {cid}: {iid} {field} {fmt_value(original, field)} -> {fmt_value(corrected_value, field)} by {name}; "
-             f"the original value {fmt_value(original, field)} is kept"]
+             f"the original value {fmt_value(original, field)} is kept (say so)"]
     if superseded:
         notes.append(f"replaces an earlier correction of {iid} {field}")
 
@@ -220,7 +220,7 @@ def record_correction(
         verdict = "producing oil" if after["is_producing"] else "not producing oil"
         notes.append(f"{a} is now {verdict} at {iid}: wellhead {fmt_value(after['wellhead_temp_c'])} °C against "
                      f"{fmt_value(after['ambient_temp_c'])} °C air, {fmt_value(after['temp_delta_c'])} °C above air "
-                     f"(threshold {fmt_value(after['producing_threshold_c'])} °C, {_cite(after['producing_rule_id'])})")
+                     f"(threshold {fmt_value(after['producing_threshold_c'])} °C, {_cite(after['producing_rule_id'])}) (say so)")
 
     if field.startswith("spill"):
         from copilot.tools.records import _findings, _well_rules  # records imports base, not this module
@@ -233,10 +233,10 @@ def record_correction(
         ids.append(row["maintenance_id"])
         if before["spill_class"] != after["spill_class"]:
             notes.append(f"spill class {before['spill_class'] or 'no spill'} -> {after['spill_class'] or 'no spill'}; "
-                         f"reportable {before['is_reportable']} -> {after['is_reportable']}")
+                         f"reportable {before['is_reportable']} -> {after['is_reportable']} (say so)")
             if row["maintenance_id"]:
                 notes.append(f"repair {row['maintenance_id']} and its report were written for the old value "
-                             f"(class {before['spill_class'] or 'no spill'}); that class no longer holds")
+                             f"(class {before['spill_class'] or 'no spill'}); that class no longer holds (say so)")
         if after["spill_detected"]:
             found_on = after["inspected_date"]
             checks = _findings(a, found_on, found_on, db.today(), _well_rules(a), notes)
@@ -245,12 +245,12 @@ def record_correction(
                     rows.append({"section": "finding", **f})
                     ids += [*f["ids"], f.get("cite")]
                     if f["status"] in ("breach", "open"):
-                        notes.append(f"{f['rule']} {f['status']}: {f['detail']}")
+                        notes.append(f"{f['rule']} {f['status']}: {f['detail']} (say so)")
 
     flipped = flipped or (field == "spill_detected" and bool(before["spill_detected"]) != bool(after["spill_detected"]))
     if flipped and row["inspection_notes"]:
         notes.append(f"the inspection note '{row['inspection_notes']}' ({row['inspector_name']}) may disagree "
-                     f"with the correction; if it does, say so and ask {name} to confirm")
+                     f"with the correction; if it does, say so and ask {name} to confirm (say so)")
     return _result(kind, rows, ids, notes)
 
 
@@ -329,9 +329,9 @@ def add_note(
             evidence = (f"{latest['inspection_id']} ({latest['inspected_date']}, {latest['inspector_name']}): "
                         f"{fmt_value(latest['temp_delta_c'])} °C above air, threshold {fmt_value(latest['producing_threshold_c'])} °C, "
                         f"so {verdict}")
-            notes.append(f"the claim matches {evidence}" if agrees else
+            notes.append(f"the claim matches {evidence} (say so)" if agrees else
                          f"the claim disagrees with {evidence}. Kept as unconfirmed: tell the user what the data "
-                         f"shows and ask them to confirm")
+                         f"shows and ask them to confirm (say so)")
 
     nid = _next_id("NOTE", asset_id, "notes", "note_id")
     with closing(db.connect(read_only=False)) as conn, conn:
@@ -343,7 +343,7 @@ def add_note(
 
     others = _other_notes(asset_id, nid, today)
     notes.insert(0, f"recorded {nid} by {profile['name']}: '{text}' ({valid_from} to {valid_to or 'open'}); "
-                    "every user sees it")
+                    "every user sees it (say so)")
     if others:
         notes.append("other notes on this well: " + "; ".join(
             f"{o['note_id']} by {o['author_name'] or 'unknown'} ({o['date']}"
@@ -434,7 +434,7 @@ def set_rule(
     n = db.rows(f"SELECT COUNT(*) AS n FROM wells w WHERE {in_scope}", scope_args)[0]["n"]
     values = _rule_values(rule_key)
     keep = [v for v in values if v["rule_id"] != rule_id]
-    notes = [f"recorded {cite}: {rule_key} = {value:g} {unit or ''} for {scope} ({n} wells); was {was}"]
+    notes = [f"recorded {cite}: {rule_key} = {value:g} {unit or ''} for {scope} ({n} wells); was {was} (say so)"]
     if keep:
         notes.append("other wells keep their rule: " + "; ".join(_describe(v) for v in keep))
     row = {"rule_id": rule_id, "rule_key": rule_key, "value": value, "unit": unit, "scope": scope,
