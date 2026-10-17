@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "copilot": "./copilot/agent.py:graph"
+  },
+  "env": ".env"
+}
