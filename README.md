@@ -5,6 +5,7 @@ English. A ReAct agent (Gemma on OpenRouter, LangGraph) calls typed data tools o
 writes the answer, cites record IDs and can show one visual (status card, table, chart, map, heatmap).
 
 - `copilot/`: the agent (`agent.py`), `ask()` (`api.py`), the tools (`tools/`), the terminal chat (`chat.py`).
+- `web/`: the chat UI. It renders `show_visual` blocks (`web/components/visual/`).
 - `db/`: the schema and the loader. The loader builds `data/copilot.db` from the dataset.
 - `evals/`: 18 eval questions (`cases.yaml`), the runner, the metrics and the reports. See [EVALS.md](EVALS.md).
 - `PLAN.md`, `PLAN-UI.md`, `TASKS.md`: the plan and who owns which files.
@@ -77,12 +78,17 @@ Questions to try (the expected answers are in `evals/cases.yaml`):
 
 ### 4. Chat in the browser
 
+The web UI (`web/`, Next.js + [assistant-ui](https://www.assistant-ui.com)) talks to the LangGraph
+server. You need Node 20+. Run the two commands in two terminals:
+
 ```bash
-uv run streamlit run ui/app.py
+uv run langgraph dev --no-browser --port 2024 --allow-blocking   # the agent API
+cd web && cp .env.example .env.local && npm install && npm run dev -- -p 3000
 ```
 
-Pick the user in the sidebar. Each answer shows the text, the visual, the sources and "How I got this"
-(the tool calls). "New chat" starts a new thread.
+Open http://localhost:3000. `--allow-blocking` is necessary: the tools use sync SQLite calls, and
+without the flag every run fails with `BlockingError`. Each answer shows the text and the visual;
+"N tool calls" opens the data tool calls. The thread list is on the left.
 
 Users (`--user`): U-201 Michael Turner (production supervisor, the default), U-202 Jessica Reed
 (inspector), U-102 Jake Morales (operator), U-301 Robert Hayes (maintenance lead), U-401 Laura Simmons
