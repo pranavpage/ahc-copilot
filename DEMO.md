@@ -6,7 +6,11 @@ cp data/copilot.db .context/demo.db        # fresh memory, so Q8 starts clean
 DB_PATH=.context/demo.db uv run langgraph dev --no-browser --port 2024 --allow-blocking
 cd web && npm run dev -- -p 3000           # http://localhost:3000
 ```
-- The full write-up and answers are in `SUBMISSION.md`.
+- The full write-up and answers are in `SUBMISSION.md`. Its answers are the web UI threads.
+- To have finished threads for all 11 questions, seed them (about 3 min, server running):
+  `uv run python scripts/seed_demo.py --final --cases Q1 Q2 Q3 Q4 Q5 Q6 Q7 Q10 Q11`.
+  Leave out Q8 and Q9 if you will ask Q8 live: Q8 saves notes and a preference, so a second
+  Q8 on the same database starts with them. Without `--cases`, it seeds all 21 turns.
 - Have `ARCHITECTURE.md` open in a preview (it has the two diagrams).
 - Answers take 15–25 s. Record, then cut the waits.
 - Optional: ask Q4 once before recording, so a finished chat is ready if the live one is slow.

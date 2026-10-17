@@ -10,8 +10,11 @@ writes the answer, cites record IDs and can show one visual (status card, table,
 - `evals/`: 18 eval questions (`cases.yaml`), the runner, the metrics and the reports. See [EVALS.md](EVALS.md).
 - `PLAN.md`, `PLAN-UI.md`, `TASKS.md`: the plan and who owns which files.
 - [SUBMISSION.md](SUBMISSION.md): the write-up (architecture on one page) and the answers to the final questions.
+  [TRANSCRIPT.md](TRANSCRIPT.md): the full answer to every turn, with tool calls and citations.
 - [DEMO.md](DEMO.md): the 5-minute demo script.
 - `scripts/run_final.py`: runs the 11 final questions and writes the answer sheet.
+- `scripts/seed_demo.py --final`: asks the final questions through the web UI's server, each as its user;
+  `scripts/export_threads.py` writes those threads as an answer sheet (`TRANSCRIPT.md`).
 
 ## Quickstart
 
@@ -99,7 +102,11 @@ For a demo, seed some threads with eval questions (needs the agent API running):
 ```bash
 uv run python scripts/seed_demo.py                   # Q1-Q10, Q14a, Q18 as U-201 (Michael Turner)
 uv run python scripts/seed_demo.py --cases Q1 --user U-202
+uv run python scripts/seed_demo.py --final           # the 11 final questions, each as its user (~3 min)
+uv run python scripts/export_threads.py             # those threads -> runs/demo/<time>/answers.md
 ```
+
+`--final` runs Q8, which saves two notes and a preference in the database the server uses.
 
 "Talking as" (top left) picks the user. The agent gets the user's name, role, team and areas in its
 system prompt. Each user sees only their own threads.
