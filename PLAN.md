@@ -5,6 +5,31 @@ Then improve by score. Memory and UI come after the first score.
 
 Stack: Python 3.13 (uv) · LangGraph · Gemma 4 26B A4B on OpenRouter · SQLite (db/) · deepeval · Streamlit (later)
 
+## Rule for every step: adding data is one command
+
+The test dataset arrives in the last 2 hours. It can have more wells, more history, new well types,
+new fields or new files. Adding it must be:
+
+```bash
+python3 db/load.py --data <new-dir> --check   # report what is new; change nothing
+python3 db/load.py --data <new-dir>           # load it alongside the sample data
+pytest evals                                  # run the evals again
+```
+
+No code change and no prompt change. To make this true:
+
+1. **No data values in code or prompts.** Tools and prompts never contain well IDs, area names, well
+   types, thresholds or dates. Tools look up names in the database. The system prompt lists the areas,
+   well types and "today" from the database at startup.
+2. **Rules come from documents.** A new manual in `fleet/well-types/` gives a new well type with its
+   own rules. If a rule is missing, the loader warns and the tool says "no rule found". It never uses a
+   default value.
+3. **Nothing is dropped.** Unknown fields go into an `extra` JSON column. Unknown `.jsonl` files go into
+   a generic `records` table. Unknown `.md` files anywhere in `fleet/` go into `documents` and the
+   search index. The loader reports each one.
+4. **Copilot knowledge survives.** A reload replaces only the source rows. Corrections, user rules,
+   notes and memory stay. (Done.)
+
 ## Step 0. Environment (20 min)
 
 1. `uv init` with Python 3.13. Add: `langgraph langchain-openai langgraph-checkpoint-sqlite deepeval pyyaml pytest python-dotenv`.
@@ -55,6 +80,8 @@ Rules for tools:
 - "today" comes from the `settings` table. Tools take explicit dates; the system prompt gives today's date.
 - Every row returned carries its record IDs, so the model can cite them.
 - Return compact JSON (Gemma context and rate limits).
+- No data values in the tool code (see the rule at the top). Thresholds come from the `well_rules` view,
+  names from `areas` / `wells`. A tool that gets an unknown area or well type returns the valid values.
 
 File: `copilot/run.py` — `ask(question, user_id) -> {answer, visual, tool_calls}`. CLI for manual tests.
 
@@ -86,7 +113,22 @@ Expect Q9 (rules broken) to be the last one to pass. It needs records + reports 
 
 ## After the first score (not on the path to evals)
 
-5. **Memory + multi-turn evals (Q11–Q18).**
+5. **Make new data easy (45 min). Do this first: the test data is certain to arrive.**
+   - Loader: add `--check` (dry run). It prints new wells, new well types, unknown fields, unknown files,
+     and rules that it did not find in the documents.
+   - Schema: add an `extra` JSON column to each source table, and a generic
+     `records(asset_id, file, line_no, json)` table for unknown `.jsonl` files.
+   - Loader: index every `.md` file under `fleet/`, not only `well-types/` and `sops/`.
+   - `evals/fixtures/make_changed.py`: copies the sample data and changes it. It adds a well type
+     `T500` (manual with a 25 °C threshold) and moves 5 wells to it. It adds one unknown field and one
+     unknown file, and adds one more week of inspections.
+   - `evals/test_data_change.py`: SQL assertions only, with no LLM calls. The changed fixture loads
+     with no errors, the T500 wells use 25 °C, the new field is in `extra`, and the corrections survive
+     the reload.
+   - Rehearsal: start from an empty database, load the sample and the fixture, then run the evals.
+     Measure the time. Target: less than 5 minutes.
+
+6. **Memory + multi-turn evals (Q11–Q18).**
    - Episodic memory: LangGraph `SqliteStore`, namespace `("users", user_id, "episodes")`. Write the
      wells/areas each answer was about. Private per user by namespace.
    - Shared notes and claims: LangGraph store, namespace `("wells", asset_id, "notes")`.
@@ -95,8 +137,8 @@ Expect Q9 (rules broken) to be the last one to pass. It needs records + reports 
      LG store, every tool would have to apply them in Python before each aggregation.
    - Tools: `record_correction`, `add_note`, `set_rule`, `recall_conversations`.
    - Eval cases get `turns: [{user, message}]` and a fresh store per case.
-6. **UI: Streamlit.** All Python, same process as the agent. `st.chat_message` for chat, a user picker in
+7. **UI: Streamlit.** All Python, same process as the agent. `st.chat_message` for chat, a user picker in
    the sidebar. One render function per `show_visual` type: card = `st.metric` in a bordered container,
    table = `st.dataframe`, line/bar/heatmap = Plotly, map = Plotly `scatter_map` (no token needed).
-7. Generalisation: a read-only `query_sql` fallback tool for questions that the typed tools do not cover.
-   Load the test dataset with `python3 db/load.py --data <dir>` and run the evals again.
+8. **Generalisation:** a read-only `query_sql` fallback tool for questions that the typed tools do not
+   cover. It gives the model the schema (including `extra` and `records`), so new fields can be used.
