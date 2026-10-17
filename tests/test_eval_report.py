@@ -370,3 +370,46 @@ def test_run_all_parallel_matches_serial():
     assert {k: v.status for k, v in serial.results.items()} == \
            {k: v.status for k, v in parallel.results.items()}
     assert not any(v.as_dependency for v in parallel.results.values())
+
+
+def test_run_all_serial_chains_start_from_a_clean_db():
+    """Part 1 (stateless cases) runs first; each part-2 chain sees none of the earlier writes,
+    and the run leaves the database as it found it."""
+    import uuid
+    from contextlib import closing
+
+    from copilot import db
+    from copilot.config import get_settings
+    from evals.cases import load_cases
+    from evals.fake import ask as fake_ask
+    from evals.runner import Runner, db_snapshot
+
+    def written() -> int:
+        return db.rows("SELECT COUNT(*) AS n FROM conversations "
+                       "WHERE conversation_id LIKE 'writes-test-%'")[0]["n"]
+
+    calls = []      # (thread_id, rows written before this turn)
+
+    def ask(question, user_id, thread_id=None):
+        calls.append((thread_id, written()))
+        with closing(db.connect(read_only=False)) as conn, conn:
+            conn.execute("INSERT INTO conversations (conversation_id, user_id, started_at) "
+                         "VALUES (?, ?, 'now')", (f"writes-test-{uuid.uuid4().hex}", user_id))
+        return fake_ask(question, user_id, thread_id)
+
+    cases = load_cases()
+    r = Runner(cases, ask, selected=[c.id for c in cases])
+    with db_snapshot(get_settings().db_path) as reset:
+        r.run_all(workers=6, reset=reset)
+    assert written() == 0
+
+    case_of = [t.split("-")[1] for t, _ in calls]
+    serial = [ch for ch in r.chains(list(r.cases)) if r.serial(ch)]
+    stateless = {ch[0] for ch in r.chains(list(r.cases)) if not r.serial(ch)}
+    first_serial = min(case_of.index(ch[0]) for ch in serial)
+    assert set(case_of[:first_serial]) == stateless
+    for ch in serial:
+        start = case_of.index(ch[0])
+        assert calls[start][1] == 0, f"{ch[0]} saw earlier writes"
+        # within a chain, writes carry over: Q12b sees what Q12a wrote
+        assert all(n > 0 for (_, n), c in zip(calls[start + 1:], case_of[start + 1:]) if c in ch)

@@ -65,10 +65,16 @@ uv run python -m evals.report --set-baseline # + evals/baseline.json from this r
 REASONING=1 uv run pytest evals              # ask OpenRouter for Gemma's reasoning (shown in the HTML)
 ```
 
-Cases run in parallel, `--workers` at a time. Cases linked by `follows` form one chain that runs
-in order (Q12a before Q12b and Q15a). All cases share one temp copy of the database, so once the
-copilot writes (corrections, notes, rules), a case can see writes from a case running at the same
-time; give each chain its own copy then. Case lines in the run log are in finish order; reports
+Cases run in two parts, on one temp copy of the database:
+
+1. **Stateless cases** (one case, one turn: Q1–Q10, Q18) run in parallel, `--workers` at a time.
+2. **Stateful chains** run one at a time: a case with more than one turn, or cases linked by
+   `follows` (Q11 → Q16b, Q12a → Q12b → Q15a, Q13 → Q15b, Q14a → Q14b, Q16a, Q17a → Q17b). They
+   write memory rows (and later corrections, notes and rules) that the next turn or case reads.
+   The database is restored from a snapshot before part 2 and after each chain, so every chain
+   starts from the original data and sees only its own writes.
+
+Runner.serial decides which part a chain is in. Case lines in the run log are in finish order; reports
 sort them by case ID.
 
 `pytest evals` prints the results table, the pass line and the run log path, and writes the HTML
