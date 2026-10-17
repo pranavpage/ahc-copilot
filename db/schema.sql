@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
--- "today" is a setting, not a constant: the docs say both 16 and 17 Oct 2026.
+-- "today" is a setting, not a constant. The loader sets it from the dataset's README
+-- ("Today" is 15 Jan 2027) when the README states it.
 INSERT OR IGNORE INTO settings (key, value) VALUES ('today', '2026-10-16');
 
 CREATE TABLE IF NOT EXISTS load_runs (
@@ -75,16 +76,35 @@ CREATE TABLE IF NOT EXISTS wells (
     recorded_status         TEXT,               -- active | down. CAN BE OUT OF DATE; inspections are the truth.
     last_inspection_id      TEXT,
     last_inspected_at       TEXT,
-    last_inspector_user_id  TEXT
+    last_inspector_user_id  TEXT,
+    status                  TEXT,               -- plugged_and_abandoned, else NULL (in service)
+    decommissioned_on       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_wells_area ON wells(area_id);
 CREATE INDEX IF NOT EXISTS idx_wells_type ON wells(well_type);
+
+-- metadata.json -> type_history[] / team_history[]. to_date NULL = current.
+-- A well's own team (and team history) takes priority over its area's team.
+CREATE TABLE IF NOT EXISTS well_type_history (
+    asset_id   TEXT NOT NULL REFERENCES wells(asset_id),
+    well_type  TEXT NOT NULL,
+    from_date  TEXT NOT NULL,
+    to_date    TEXT,
+    PRIMARY KEY (asset_id, from_date)
+);
+CREATE TABLE IF NOT EXISTS team_history (
+    asset_id   TEXT NOT NULL REFERENCES wells(asset_id),
+    team_id    TEXT NOT NULL,
+    from_date  TEXT NOT NULL,
+    to_date    TEXT,
+    PRIMARY KEY (asset_id, from_date)
+);
 
 -- metadata.json -> equipment[]
 CREATE TABLE IF NOT EXISTS equipment (
     equipment_id  TEXT PRIMARY KEY,
     asset_id      TEXT NOT NULL REFERENCES wells(asset_id),
-    kind          TEXT NOT NULL,        -- wellhead, pump_jack, rod_string, downhole_pump, flowline, separator
+    kind          TEXT NOT NULL,        -- wellhead, pump_jack, rod_string, downhole_pump, esp_pump, flowline, separator
     model         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_equipment_asset ON equipment(asset_id);
@@ -104,7 +124,8 @@ CREATE TABLE IF NOT EXISTS inspections (
     spill_area_pct        REAL,
     spill_est_volume_bbl  REAL,               -- AI estimate from images
     evidence_images       TEXT,               -- JSON array of paths (files not supplied)
-    notes                 TEXT                -- inspector remark, e.g. "Pump jack not moving."
+    notes                 TEXT,               -- inspector remark, e.g. "Pump jack not moving."
+    recorded_at           TEXT                -- set only if entered late (ID ends in -B<n>)
 );
 CREATE INDEX IF NOT EXISTS idx_inspections_asset_time ON inspections(asset_id, inspected_at);
 CREATE INDEX IF NOT EXISTS idx_inspections_time ON inspections(inspected_at);
@@ -126,7 +147,11 @@ CREATE TABLE IF NOT EXISTS maintenance (
     cost_parts_usd              REAL,
     cost_total_usd              REAL,
     triggered_by_inspection_id  TEXT REFERENCES inspections(inspection_id),
-    report_file                 TEXT             -- path relative to the well folder; names vary
+    report_file                 TEXT,            -- path relative to the well folder; names vary
+    recorded_at                 TEXT,            -- set only if entered late (ID ends in -L<n>)
+    cost_original_total_usd     REAL,            -- cost_revision: total before the revision
+    cost_revised_on             TEXT,
+    cost_revision_reason        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_maintenance_asset_start ON maintenance(asset_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_maintenance_trigger ON maintenance(triggered_by_inspection_id);
@@ -138,7 +163,25 @@ CREATE TABLE IF NOT EXISTS maintenance_reports (
     file_path          TEXT NOT NULL,     -- relative to the dataset root, for citations
     title              TEXT,
     body_md            TEXT NOT NULL,
-    containment_hours  REAL               -- parsed from "contained about N hours"; only in reports
+    containment_hours  REAL,              -- parsed from "contained about N hours"; only in reports
+    is_interim         INTEGER NOT NULL DEFAULT 0,  -- "Status: interim report": job still in progress
+    root_cause         TEXT,              -- body of "## Root cause"
+    failure_category   TEXT,              -- OPS-4 of the Operations SOP, from root_cause
+    -- "**Parts installed:** Highline RP-175 pump, serial SN-664877, lot LOT-2409-A"
+    parts_installed    TEXT,
+    pump_model         TEXT,
+    pump_serial        TEXT,
+    pump_lot           TEXT,
+    -- "**Follow-up:** Crew to return within 7 days to ..."
+    follow_up_text     TEXT,
+    follow_up_days     INTEGER,
+    follow_up_to       TEXT,              -- this job is the follow-up to that MNT id (from the issue)
+    -- "The well stayed shut in for about N days longer than the repair itself because ..."
+    wait_extra_days    REAL,
+    wait_reason        TEXT,              -- parts | crew | contractor | weather | rig | other
+    wait_reason_text   TEXT,
+    h2s_max_ppm        REAL,              -- WS-03 line: "highest reading N ppm"
+    soil_samples_sent  INTEGER            -- spill reports: 1 if "Soil samples sent to the lab." is present
 );
 
 -- Report split at its "## " headings. Heading sets vary (e.g. "Waste", "Work done so far").
@@ -210,7 +253,7 @@ CREATE TABLE IF NOT EXISTS notes (
     asset_id        TEXT NOT NULL REFERENCES wells(asset_id),
     created_at      TEXT NOT NULL,
     author_user_id  TEXT REFERENCES users(user_id),
-    note_type       TEXT NOT NULL,   -- dataset: operator_feedback | operator_note | correction
+    note_type       TEXT NOT NULL,   -- dataset: operator_feedback | operator_note | correction | data_correction
     inspection_id   TEXT,            -- dataset: only on 'correction' notes
     text            TEXT NOT NULL,
     valid_from      TEXT,
@@ -218,9 +261,15 @@ CREATE TABLE IF NOT EXISTS notes (
     -- For copilot notes that state a fact about the well ("WELL-0175 is running fine").
     -- 'unconfirmed' when it disagrees with the data; the copilot keeps it and says so.
     claim_status    TEXT CHECK (claim_status IN ('consistent', 'unconfirmed', 'confirmed', 'retracted')),
-    conversation_id TEXT
+    conversation_id TEXT,
+    -- Operator notes, tagged by the loader from the text (Operations SOP):
+    --   gas_odor | bypass_in | bypass_out | shut_in | restart | symptom | routine
+    event           TEXT,
+    symptom         TEXT             -- rod squeal, rattle, fluid pound, tagging bottom, amps hunting,
+                                     -- drive tripping, leak; set on symptom notes (and leak shut-ins)
 );
 CREATE INDEX IF NOT EXISTS idx_notes_asset ON notes(asset_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_notes_event ON notes(event, created_at);
 CREATE INDEX IF NOT EXISTS idx_notes_inspection ON notes(inspection_id);
 
 -- Record-level overrides. One row = one field of one record, with full provenance.
@@ -270,6 +319,30 @@ CREATE TABLE IF NOT EXISTS rules (
     conversation_id  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_rules_key ON rules(rule_key, status);
+
+-- fleet/sops/moc-*.md: one row per well named in a management-of-change memo.
+-- expires_on is the effective expiry: an extension memo replaces the original's date.
+CREATE TABLE IF NOT EXISTS moc_approvals (
+    moc_id           TEXT NOT NULL,       -- MOC-2026-031
+    asset_id         TEXT NOT NULL,
+    title            TEXT,
+    effective_from   TEXT,
+    original_expiry  TEXT,                -- the date written in this memo
+    expires_on       TEXT,                -- after extensions
+    extended_by      TEXT,                -- MOC id of the extension, if any
+    doc_id           TEXT NOT NULL,
+    PRIMARY KEY (moc_id, asset_id)
+);
+
+-- fleet/sops/supplier-recall-notice-*.md: the recalled lots.
+CREATE TABLE IF NOT EXISTS recall_lots (
+    lot          TEXT PRIMARY KEY,
+    model        TEXT,                    -- Highline RP-175
+    reference    TEXT,                    -- HPC-RN-2026-07
+    notice_date  TEXT,
+    replace_by   TEXT,
+    doc_id       TEXT NOT NULL
+);
 
 -- ============================================================================
 -- Layer 2: private memory (per user)
@@ -369,14 +442,37 @@ WHERE rn = 1;
 
 -- Inspections with corrections applied and the producing rule evaluated.
 -- raw_* columns keep the recorded values; the plain names are the effective values.
+-- The producing threshold is the one for the well's type ON THE INSPECTION DATE
+-- (type_history), unless a user or well-specific rule overrides it.
 DROP VIEW IF EXISTS inspections_effective;
 CREATE VIEW inspections_effective AS
 WITH cc AS (SELECT * FROM corrections_current WHERE target_table = 'inspections'),
-     thr AS (SELECT asset_id, value, rule_id FROM well_rules WHERE rule_key = 'production_min_delta_c'),
+     wthr AS (SELECT asset_id, value, rule_id, source, scope FROM well_rules
+              WHERE rule_key = 'production_min_delta_c'),
+     tthr AS (SELECT well_type, value, rule_id FROM (
+                SELECT well_type, value, rule_id,
+                       ROW_NUMBER() OVER (PARTITION BY well_type ORDER BY created_at DESC, rule_id DESC) AS rn
+                FROM rules WHERE rule_key = 'production_min_delta_c' AND status = 'active'
+                  AND source = 'document' AND asset_id IS NULL AND well_type IS NOT NULL)
+              WHERE rn = 1),
+     thr AS (
+        SELECT i.inspection_id,
+               CASE WHEN wthr.source = 'user' OR wthr.scope = 'well' OR tthr.value IS NULL
+                    THEN wthr.value ELSE tthr.value END AS value,
+               CASE WHEN wthr.source = 'user' OR wthr.scope = 'well' OR tthr.value IS NULL
+                    THEN wthr.rule_id ELSE tthr.rule_id END AS rule_id,
+               COALESCE(h.well_type, w.well_type) AS well_type
+        FROM inspections i
+        JOIN wells w ON w.asset_id = i.asset_id
+        LEFT JOIN well_type_history h
+          ON h.asset_id = i.asset_id AND i.inspected_date >= h.from_date
+         AND (h.to_date IS NULL OR i.inspected_date <= h.to_date)
+        LEFT JOIN wthr ON wthr.asset_id = i.asset_id
+        LEFT JOIN tthr ON tthr.well_type = COALESCE(h.well_type, w.well_type)),
      dpi AS (SELECT asset_id, value FROM well_rules WHERE rule_key = 'downtime_days_per_inspection')
 SELECT
-    i.inspection_id, i.asset_id, w.well_type, w.area_id,
-    i.inspected_at, i.inspected_date, i.inspector_user_id, i.method, i.notes,
+    i.inspection_id, i.asset_id, thr.well_type, w.area_id,
+    i.inspected_at, i.inspected_date, i.inspector_user_id, i.method, i.notes, i.recorded_at,
     i.ambient_temp_c       AS raw_ambient_temp_c,
     i.wellhead_temp_c      AS raw_wellhead_temp_c,
     i.spill_detected       AS raw_spill_detected,
@@ -403,7 +499,7 @@ SELECT
         COALESCE(c_area.correction_id, '')), '')             AS correction_ids
 FROM inspections i
 JOIN wells w ON w.asset_id = i.asset_id
-LEFT JOIN thr ON thr.asset_id = i.asset_id
+LEFT JOIN thr ON thr.inspection_id = i.inspection_id
 LEFT JOIN dpi ON dpi.asset_id = i.asset_id
 LEFT JOIN cc c_amb  ON c_amb.target_id  = i.inspection_id AND c_amb.field  = 'ambient_temp_c'
 LEFT JOIN cc c_wh   ON c_wh.target_id   = i.inspection_id AND c_wh.field   = 'wellhead_temp_c'
@@ -437,19 +533,66 @@ LEFT JOIN maintenance m ON m.triggered_by_inspection_id = e.inspection_id
 LEFT JOIN maintenance_reports mr ON mr.maintenance_id = m.maintenance_id
 WHERE e.spill_detected = 1;
 
--- "Right now" = each well's latest inspection.
+-- "Right now" (Operations SOP OPS-3): the more recent of the latest inspection reading and
+-- the latest operator note saying the well was shut in or restarted.
+--   shut-in note newer  -> not producing (shut in), even if the inspection reads producing
+--   restart note newer  -> producing (unconfirmed) until an inspection confirms it
+--   plugged_and_abandoned wells are plugged, whatever the readings say.
+-- status_now: producing | not_producing | producing_unconfirmed | plugged
 DROP VIEW IF EXISTS well_status_now;
 CREATE VIEW well_status_now AS
+WITH last_ins AS (
+    SELECT asset_id, inspection_id FROM (
+        SELECT asset_id, inspection_id,
+               ROW_NUMBER() OVER (PARTITION BY asset_id ORDER BY inspected_at DESC, inspection_id DESC) AS rn
+        FROM inspections)
+    WHERE rn = 1
+),
+last_note AS (
+    SELECT * FROM (
+        SELECT asset_id, note_id, created_at, event, text, author_user_id,
+               ROW_NUMBER() OVER (PARTITION BY asset_id ORDER BY created_at DESC, note_id DESC) AS rn
+        FROM notes WHERE source = 'dataset' AND event IN ('shut_in', 'restart'))
+    WHERE rn = 1
+)
 SELECT
-    w.asset_id, w.name, w.well_type, w.area_id, a.name AS area_name, w.lat, w.lon,
-    w.recorded_status,
+    w.asset_id, w.name, w.well_type, w.area_id, a.name AS area_name, w.team_id, w.lat, w.lon,
+    w.recorded_status, w.status AS well_status, w.decommissioned_on,
     e.inspection_id, e.inspected_at, e.inspector_user_id, e.method,
     e.ambient_temp_c, e.wellhead_temp_c, e.temp_delta_c, e.producing_threshold_c,
     e.is_producing, e.notes AS inspection_notes, e.correction_ids,
+    n.note_id AS status_note_id, n.created_at AS status_note_at, n.event AS status_note_event,
+    n.text AS status_note_text,
+    CASE
+        WHEN w.status = 'plugged_and_abandoned' THEN 'plugged'
+        WHEN n.created_at > e.inspected_at AND n.event = 'shut_in' THEN 'not_producing'
+        WHEN n.created_at > e.inspected_at AND n.event = 'restart' THEN 'producing_unconfirmed'
+        WHEN e.is_producing THEN 'producing'
+        ELSE 'not_producing'
+    END AS status_now,
+    CASE
+        WHEN w.status = 'plugged_and_abandoned' THEN 'well_status'
+        WHEN n.created_at > e.inspected_at THEN 'operator_note'
+        ELSE 'inspection'
+    END AS status_basis,
     (CASE WHEN e.is_producing THEN 'active' ELSE 'down' END) <> w.recorded_status AS recorded_status_stale
 FROM wells w
 JOIN areas a ON a.area_id = w.area_id
-JOIN inspections_effective e
-  ON e.inspection_id = (SELECT i.inspection_id FROM inspections i
-                        WHERE i.asset_id = w.asset_id
-                        ORDER BY i.inspected_at DESC LIMIT 1);
+JOIN last_ins li ON li.asset_id = w.asset_id
+JOIN inspections_effective e ON e.inspection_id = li.inspection_id
+LEFT JOIN last_note n ON n.asset_id = w.asset_id;
+
+-- Pump installs from the repair reports' "Parts installed" line, and the pump in each
+-- well today (the latest install by job start). recalled = its lot is in recall_lots.
+DROP VIEW IF EXISTS pump_installs;
+CREATE VIEW pump_installs AS
+SELECT m.asset_id, m.maintenance_id, m.started_at, m.completed_at, m.equipment_kind,
+       r.pump_model, r.pump_serial, r.pump_lot, r.file_path AS report_path,
+       m.cost_total_usd, m.cost_parts_usd, m.cost_labor_usd,
+       rl.lot IS NOT NULL AS recalled, rl.reference AS recall_reference,
+       ROW_NUMBER() OVER (PARTITION BY m.asset_id ORDER BY m.started_at DESC, m.maintenance_id DESC) = 1
+           AS is_current
+FROM maintenance_reports r
+JOIN maintenance m ON m.maintenance_id = r.maintenance_id
+LEFT JOIN recall_lots rl ON rl.lot = r.pump_lot
+WHERE r.pump_lot IS NOT NULL;
