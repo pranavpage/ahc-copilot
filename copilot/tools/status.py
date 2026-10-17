@@ -106,9 +106,13 @@ def well_status(
     area: str | None = None,
     not_producing_only: bool = False,
 ) -> ToolResult:
-    """Current status of wells, from each well's latest inspection.
+    """Current status of wells ("right now"), by the Operations SOP OPS-3.
 
-    Per well: producing yes/no, °C above air vs. the threshold, the last inspection (ID, date,
+    `status_now`: producing | not_producing | producing_unconfirmed | plugged. It comes from the
+    MORE RECENT of the latest inspection and the latest operator note saying the well was shut in
+    or restarted (`status_basis`, `status_note_*`): a newer shut-in note -> not producing; a newer
+    restart note -> producing (unconfirmed). Plugged-and-abandoned wells are plugged.
+    Per well also: the latest inspection's reading (is_producing), °C above air vs. the threshold, the last inspection (ID, date,
     inspector, method), the recorded status and whether it is out of date, open repairs, notes
     valid now (`current_notes`: dataset notes and what users told the copilot, with claim status)
     and planned ones (`upcoming_notes`), and who corrected the reading (`corrections`).
@@ -131,14 +135,15 @@ def well_status(
         where.append("s.asset_id IN (SELECT value FROM json_each(:asset_ids))")
         params["asset_ids"] = json.dumps(asset_ids)
     if not_producing_only:
-        where.append("NOT s.is_producing")
+        where.append("s.status_now <> 'producing'")
 
     found = db.rows(
         f"""
         SELECT s.asset_id, s.well_type, s.area_name, s.is_producing, s.temp_delta_c,
                s.producing_threshold_c, s.inspection_id, s.inspected_at, u.name AS inspector_name,
                s.method, s.inspection_notes, s.recorded_status, s.recorded_status_stale,
-               s.correction_ids
+               s.correction_ids, s.status_now, s.status_basis, s.status_note_id, s.status_note_at,
+               s.status_note_text, s.decommissioned_on
         FROM well_status_now s
         LEFT JOIN users u ON u.user_id = s.inspector_user_id
         {"WHERE " + " AND ".join(where) if where else ""}
