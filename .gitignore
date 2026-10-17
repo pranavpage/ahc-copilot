@@ -1,2 +1,6 @@
 data/
 __pycache__/
+.env
+.langgraph_api/
+.venv/
+.pytest_cache/
