@@ -96,6 +96,8 @@ WAIT_REASONS = [
     ("contractor", r"contractor"), ("rig", r"workover rig"), ("crew", r"crew"),
 ]
 WAIT_RE = re.compile(r"for about ([\d.]+) days? longer than the repair itself because ([^.]+)\.", re.I)
+# "Sandstone Rod & Pump's workover rig was busy on other wells, so the well waited about 2 days for it"
+RIG_WAIT_RE = re.compile(r"([^.]*?workover rig was busy[^.]*?), so the well waited about ([\d.]+) days?", re.I)
 PARTS_RE = re.compile(r"\*\*Parts installed:\*\*\s*(.+?) pump, serial (\S+), lot ([\w-]+)")
 FOLLOW_UP_RE = re.compile(r"\*\*Follow-up:\*\*\s*(.+)")
 H2S_RE = re.compile(r"highest reading ([\d.]+) ppm", re.I)
@@ -443,8 +445,15 @@ class Loader:
         parts, follow = PARTS_RE.search(md), FOLLOW_UP_RE.search(md)
         wait, h2s = WAIT_RE.search(re.sub(r"\s+", " ", plain)), H2S_RE.search(plain)
         wait_reason = None
-        if wait:
-            wait_reason = next((k for k, pat in WAIT_REASONS if re.search(pat, wait.group(2), re.I)), "other")
+        rig = None if wait else RIG_WAIT_RE.search(re.sub(r"\s+", " ", plain))
+        if rig:
+            extra, text = float(rig.group(2)), rig.group(1).strip()
+            wait_reason = "rig"
+        elif wait:
+            extra, text = float(wait.group(1)), wait.group(2).strip()
+            wait_reason = next((k for k, pat in WAIT_REASONS if re.search(pat, text, re.I)), "other")
+        else:
+            extra = text = None
         fdays = re.search(r"within (\d+) days", follow.group(1)) if follow else None
         fto = re.search(r"Follow-up to (MNT-[\w-]+?):", issue)
         is_spill = "spill clean-up" in md.lower()
@@ -457,7 +466,7 @@ class Loader:
                 parts.group(3) if parts else None,
                 follow.group(1).strip() if follow else None, int(fdays.group(1)) if fdays else None,
                 fto.group(1) if fto else None,
-                float(wait.group(1)) if wait else None, wait_reason, wait.group(2).strip() if wait else None,
+                extra, wait_reason, text,
                 float(h2s.group(1)) if h2s else None,
                 int("Soil samples sent to the lab." in md) if is_spill else None))
         self.count("maintenance_reports")
