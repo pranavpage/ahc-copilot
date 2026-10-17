@@ -158,3 +158,9 @@ def pass_line(totals: dict) -> str:
     """"7/10 pass · 2 fail · 1 error"."""
     p, f, e = (totals.get(s, 0) for s in (Status.PASS, Status.FAIL, Status.ERROR))
     return f"{p}/{p + f + e} pass · {f} fail · {e} error"
+
+
+def case_order(case_id: str) -> tuple:
+    """Q2 before Q10; Q12a before Q12b."""
+    m = re.match(r"([A-Za-z]*)(\d+)(.*)", case_id)
+    return (m.group(1), int(m.group(2)), m.group(3)) if m else (case_id, 0, "")

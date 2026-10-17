@@ -8,6 +8,7 @@ Thread: config["configurable"]["thread_id"]. User: config["configurable"]["user_
 import inspect
 import json
 import os
+import threading
 import warnings
 from functools import lru_cache, wraps
 
@@ -140,10 +141,22 @@ def make_graph(model=None, checkpointer=None):
     ).with_config(recursion_limit=RECURSION_LIMIT)
 
 
+_graph_lock = threading.Lock()
+
+
 @lru_cache
-def get_graph():
-    """In-process graph with an in-memory checkpointer (one per process)."""
+def _get_graph():
     return make_graph(checkpointer=InMemorySaver())
+
+
+def get_graph():
+    """In-process graph with an in-memory checkpointer (one per process). Locked, so threads
+    that ask at the same time (parallel evals) share one graph and one conversation memory."""
+    with _graph_lock:
+        return _get_graph()
+
+
+get_graph.cache_clear = _get_graph.cache_clear
 
 
 graph = make_graph()

@@ -16,7 +16,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from evals.schema import METRIC_NAMES, Status, pass_line, summarize
+from evals.schema import METRIC_NAMES, Status, case_order, pass_line, summarize
 
 EVALS = Path(__file__).resolve().parent
 RUNS_DIR = EVALS / "runs"
@@ -70,6 +70,7 @@ def load_run(path: Path) -> Run:
             cases.append(rec)
         elif kind == "run_end":
             end = rec
+    cases.sort(key=lambda c: case_order(c.get("case_id", "")))   # parallel runs log in finish order
     return Run(Path(path), start, cases, end)
 
 

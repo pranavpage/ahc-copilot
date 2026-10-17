@@ -170,54 +170,50 @@ class VisualMatch(_Sync, BaseMetric):
 
 JUDGE_PROMPT = """\
 You check one answer of an oil-field data assistant. Check the data, not the style.
+Facts are counted by a separate check; you judge the rubric and contradictions only.
 
 Question:
 {question}
 
-Expected facts (each one must be in the answer; "a | b" = any one of them):
+Expected facts (for reference; "a | b" = any one of them):
 {facts}
 
 Rubric (must be true of the answer): {rubric}
 
-Answer:
+Answer text:
 {answer}
+
+Visuals shown with the answer (JSON: status card, table, chart, map ...; part of the answer):
+{blocks}
 
 Tool results the assistant saw (JSON, may be cut):
 {tools}
 
 Rules:
-- A fact is stated if the answer gives the same value in any form: 49 = 49.0 = "49 days",
-  2026-10-15 = "15 Oct" = "October 15", 5,000 = 5000, an ID in any quotes or formatting.
-  A rounded value is stated if it rounds the same way (21.13 -> 21.1).
-- A fact is not stated if it is only implied, or only in the tool results.
-- Extra details and justifications (e.g. why a rule was broken, which note explains it) are fine.
-  List a contradiction only if the answer states something that conflicts with an expected fact,
-  the rubric or the tool results.
-- If there is no rubric, set rubric_met to null."""
-
-
-class FactVerdict(BaseModel):
-    fact: str = Field(description="the expected fact, as listed")
-    stated: bool
-    evidence: str = Field(description="the words of the answer that state it, or why it is missing")
+- The answer is the text and the visuals together. A point made only in a visual counts.
+- Values match in any form: 49 = 49.0 = "49 days", 2026-10-15 = "15 Oct", 5,000 = 5000.
+- rubric_met: true if the answer (text or visuals) does what the rubric says. A missing number or ID
+  alone does not fail the rubric unless the rubric asks for it. If there is no rubric, null.
+- Extra details and justifications are fine. List a contradiction only if the answer states
+  something that conflicts with an expected fact, the rubric or the tool results."""
 
 
 class Verdict(BaseModel):
-    facts: list[FactVerdict]
     rubric_met: bool | None
     contradictions: list[str]
     reason: str = Field(description="one sentence")
 
 
 class Judge(_Sync, BaseMetric):
-    """L1 data judge (LLM): each expected fact stated in any equivalent form, the rubric met, and
-    no contradiction. Extra justification is not penalised. Only with --judge.
+    """L1 data judge (LLM): the rubric met and no contradiction, judged on the answer text and its
+    visuals. Facts are FactRecall's job. Extra justification is not penalised. Only with --judge.
 
-    Score = share of facts stated (and the rubric, as one more item). JUDGE_MODEL on OpenRouter.
-    details: facts [{fact, stated, evidence}], rubric, rubric_met, contradictions, evaluation_model.
+    Score = mean of [rubric met (if a rubric), no contradictions]. JUDGE_MODEL on OpenRouter.
+    details: rubric, rubric_met, contradictions, evaluation_model.
     """
 
-    version = 2                # 2: data judge with a strong model (1 was GEval on the rubric, Gemma)
+    version = 3                # 3: rubric + contradictions only, sees the visuals
+                               # 2: + each must_include fact in the text; 1: GEval on the rubric, Gemma
 
     def __init__(self, must_include: list[str | list[str]], rubric: str | None, model: str | None = None):
         self.facts = [i if isinstance(i, str) else " | ".join(i) for i in must_include]
@@ -229,23 +225,22 @@ class Judge(_Sync, BaseMetric):
     def measure(self, test_case: LLMTestCase, *args, **kwargs) -> float:
         from copilot.llm import chat_model
 
-        tools = "\n".join(f'{t["name"]}: {t["text"][:6000]}'
-                          for t in (test_case.metadata or {}).get("tool_results", [])) or "(none)"
+        meta = test_case.metadata or {}
+        tools = "\n".join(f'{t["name"]}: {t["text"][:6000]}' for t in meta.get("tool_results", [])) or "(none)"
+        blocks = _dumps(meta.get("blocks", [])) if meta.get("blocks") else "(none)"
         prompt = JUDGE_PROMPT.format(
-            question=test_case.input, answer=test_case.actual_output or "(empty)", tools=tools[:20000],
+            question=test_case.input, answer=test_case.actual_output or "(empty)",
+            blocks=blocks[:12000], tools=tools[:20000],
             facts="\n".join(f"- {f}" for f in self.facts) or "(none)", rubric=self.rubric or "(none)")
         llm = chat_model(self.evaluation_model).with_structured_output(Verdict, method="function_calling")
         v: Verdict = llm.invoke(prompt)
 
-        items = [f.stated for f in v.facts] + ([v.rubric_met] if self.rubric and v.rubric_met is not None else [])
-        self.score = sum(items) / len(items) if items else 1.0
-        self.success = all(items) and not v.contradictions
-        self.details = {"facts": [f.model_dump() for f in v.facts], "rubric": self.rubric,
-                        "rubric_met": v.rubric_met, "contradictions": v.contradictions,
-                        "evaluation_model": self.evaluation_model}
-        missing = [f.fact for f in v.facts if not f.stated]
-        problems = ([f"missing: {', '.join(missing)}"] if missing else []) + \
-                   (["rubric not met"] if self.rubric and v.rubric_met is False else []) + \
+        items = ([v.rubric_met] if self.rubric and v.rubric_met is not None else []) + [not v.contradictions]
+        self.score = sum(items) / len(items)
+        self.success = all(items)
+        self.details = {"rubric": self.rubric, "rubric_met": v.rubric_met,
+                        "contradictions": v.contradictions, "evaluation_model": self.evaluation_model}
+        problems = (["rubric not met"] if self.rubric and v.rubric_met is False else []) + \
                    ([f"contradicts: {'; '.join(v.contradictions)}"] if v.contradictions else [])
         self.reason = "; ".join(problems) or v.reason
         return self.score

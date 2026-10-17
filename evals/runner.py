@@ -12,9 +12,11 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import traceback
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -34,6 +36,7 @@ from evals.schema import Status
 Ask = Callable[..., Answer]
 RUNS_DIR = Path(__file__).resolve().parent / "runs"
 ROWS_PREVIEW = 20          # rows of each tool result kept in the run log
+WORKERS = 6                # cases (dependency chains) run at the same time; --workers / EVAL_WORKERS
 
 
 def get_ask() -> Ask:
@@ -216,7 +219,7 @@ class Runner:
     """Runs each case at most once per session, after the cases it follows.
 
     `selected`: the case IDs asked for. A selected case is never marked as a dependency, even
-    when another case runs it first.
+    when another case runs it first. `run_all` runs independent chains of cases in parallel.
     """
 
     def __init__(self, cases: list[EvalCase], ask: Ask, judge: bool = False,
@@ -227,8 +230,9 @@ class Runner:
         self.log_path = log_path
         self.selected = set(selected) if selected is not None else None
         self.threads: dict[tuple[str, str], str] = {}
-        self.results: dict[str, CaseResult] = {}    # in run order
-        self._running: list[str] = []
+        self.results: dict[str, CaseResult] = {}    # in finish order
+        self._local = threading.local()             # per thread: the cases being resolved
+        self._lock = threading.Lock()               # results and the run log
         self.run_id = log_path.stem if log_path else None
         self._started = time.perf_counter()
 
@@ -246,7 +250,7 @@ class Runner:
             "judge": self.judge, "judge_model": judge_model() if self.judge else None,
             "metric_versions": METRIC_VERSIONS,
             **db_info(),
-            "cases": sorted(self.selected or self.cases, key=_case_order),
+            "cases": sorted(self.selected or self.cases, key=schema.case_order),
             "argv": list(sys.argv if argv is None else argv),
         }
         if db_path is not None:
@@ -266,11 +270,51 @@ class Runner:
     def _write(self, rec: dict) -> None:
         if self.log_path is None:
             return
-        self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.log_path.open("a") as f:
-            f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+        line = json.dumps(rec, ensure_ascii=False, default=str) + "\n"
+        with self._lock:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.log_path.open("a") as f:
+                f.write(line)
 
     # -- cases ---------------------------------------------------------------
+
+    def chains(self, case_ids: list[str]) -> list[list[str]]:
+        """The cases and everything they follow, split into groups linked by `follows`, each
+        in a safe run order (a case after the cases it follows). Groups can run in parallel."""
+        parent: dict[str, str] = {}
+
+        def find(c: str) -> str:
+            while parent.setdefault(c, c) != c:
+                c = parent[c]
+            return c
+
+        todo, seen = list(case_ids), set()
+        while todo:
+            c = todo.pop()
+            if c in seen or c not in self.cases:
+                continue
+            seen.add(c)
+            for dep in self.cases[c].follows:
+                parent[find(dep)] = find(c)
+                todo.append(dep)
+            find(c)
+        groups: dict[str, list[str]] = {}
+        for c in sorted(seen, key=schema.case_order):
+            groups.setdefault(find(c), []).append(c)
+        return sorted(groups.values(), key=lambda g: schema.case_order(g[0]))
+
+    def run_all(self, case_ids: list[str] | None = None, workers: int = WORKERS) -> None:
+        """Run the cases, `workers` chains at a time. Within a chain, cases run one by one
+        (`result` runs what a case follows first). Results stay cached for `result`."""
+        ids = list(case_ids if case_ids is not None else self.selected or self.cases)
+
+        def run_chain(chain: list[str]) -> None:
+            for c in chain:
+                self.result(c, as_dependency=c not in ids)
+
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            for future in [pool.submit(run_chain, ch) for ch in self.chains(ids)]:
+                future.result()
 
     def result(self, case_id: str, as_dependency: bool = False) -> CaseResult:
         if self.selected is not None and case_id in self.selected:
@@ -279,20 +323,22 @@ class Runner:
             if not as_dependency:
                 self.results[case_id].as_dependency = False
             return self.results[case_id]
-        if case_id in self._running:
-            raise ValueError(f"follows cycle: {' -> '.join(self._running + [case_id])}")
+        running = self._local.__dict__.setdefault("running", [])
+        if case_id in running:
+            raise ValueError(f"follows cycle: {' -> '.join(running + [case_id])}")
         if case_id not in self.cases:
             raise ValueError(f"unknown case {case_id!r} in follows")
         case = self.cases[case_id]
-        self._running.append(case_id)
+        running.append(case_id)
         try:
             deps = [self.result(dep, as_dependency=True) for dep in case.follows]
         finally:
-            self._running.pop()
+            running.pop()
         res = self._run(case)
         res.errors += [f"dependency {d.case.id} errored" for d in deps if d.status == Status.ERROR]
         res.as_dependency = as_dependency
-        self.results[case_id] = res
+        with self._lock:
+            self.results[case_id] = res
         self._write(res.record())
         return res
 
@@ -318,12 +364,6 @@ class Runner:
                 except Exception as e:      # a judge error is a metric ERROR, not a case ERROR
                     m.error, m.success, m.reason = f"{type(e).__name__}: {e}", False, f"error: {e}"
         return res
-
-
-def _case_order(case_id: str) -> tuple:
-    """Q2 before Q10; Q12a before Q12b."""
-    m = re.match(r"([A-Za-z]*)(\d+)(.*)", case_id)
-    return (m.group(1), int(m.group(2)), m.group(3)) if m else (case_id, 0, "")
 
 
 @contextmanager
