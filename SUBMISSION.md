@@ -55,6 +55,32 @@ flowchart LR
 - **"Today" and the rules come from the data.** The loader reads "today" from the dataset
   README and the thresholds from the manuals, so loading the test data is one command.
 
+<div style="page-break-after: always;"></div>
+
+## Evaluation and lessons
+
+**How we evaluated it** (details in `EVALS.md`). There are three levels, from fast to slow:
+
+1. **Unit tests, no LLM (317).** Every tool rule, the answer check, memory and the loader.
+2. **Eval set, live LLM (23 cases).** The organisers' 18 sample questions on the sample data,
+   including multi-turn and memory cases. Each case gets the three metrics below (built on deepeval).
+3. **The final questions, end to end.** `scripts/run_final.py` runs all 21 turns on a fresh copy
+   of the database (about 100 s). We read every answer.
+
+| Metric | Checked by | Passes when |
+|---|---|---|
+| FactRecall | code | every expected ID, number and date is in the answer, its citations or its visual; no forbidden item |
+| VisualMatch | code | the expected visual type is shown |
+| LLM as a judge | DeepSeek V4 Pro (a different model family from the copilot) | the answer text *and its visuals* meet the case's rubric (the reasoning, the caveats, the conflicts shown), with no contradictions. Facts are not its job, because FactRecall checks them exactly |
+
+Each failure gets a category that points at the fix. *Retrieval* means the fact is in no tool
+result, so the tool or its arguments are wrong. *Generation* means the fact is in a tool result
+but not in the answer, so the prompt is at fault. The others are *no visual*, *wrong visual* and
+*judge*. One-turn cases run in parallel. Memory chains run in order on a database restored from a
+snapshot. Each run is compared with a baseline (fixes and regressions) and logged in
+`evals/history.csv`. **In one day: 4 → 15 of 23 pass, FactRecall 0.69 → 0.97, judge 0.54 →
+0.78, 0 regressions in the last run.**
+
 **Lessons learnt**
 1. With a small model, every option you expose is a way to be wrong. When we gave a tool a
    "count workover-rig waits separately" switch, the model turned it on and gave the wrong
@@ -64,6 +90,12 @@ flowchart LR
    MOC-2026-044 extends another memo's expiry date.
 3. Run the real questions end to end early. Running all 21 turns takes about 100 s, and it
    found 4 bugs that 317 passing unit tests had missed.
+4. Most early failures were *retrieval* failures: wrong date ranges, or missing columns in a
+   tool. Fixing the tools helped more than changing the prompt.
+5. Use the LLM judge only for what code cannot check, like reasoning and caveats. When exact
+   facts are in code, they cost nothing and never give different results on a re-run. The judge
+   is the strictest metric: it failed 7 of the 8 cases that still fail, most with the rubric
+   partly met.
 
 <div style="page-break-after: always;"></div>
 
