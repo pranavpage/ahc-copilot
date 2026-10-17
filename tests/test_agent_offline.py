@@ -120,6 +120,22 @@ def test_show_visual_validation():
     assert len(loose["rows"]) == 2
 
 
+def test_show_visual_fixes_column_name_keys():
+    rid = results.put("spills", [{"area": "A", "month": "2026-01", "spill_count": 3},
+                                 {"area": "B", "month": "2026-02", "spill_count": 1}])
+    # The model sent column names as keys: they are mapped to x / y / value.
+    heat = show_visual({"type": "heatmap", "title": "t", "source": rid,
+                        "fields": {"month": "month", "spill_count": "spill_count"}})
+    assert heat["fields"] == {"x": "month", "y": "area", "value": "spill_count"}
+    # An extra key is dropped, not an error (a strict check made the model loop).
+    m = results.put("spills", [{"asset_id": "W-1", "lat": 1.0, "lon": 2.0}])
+    spot = show_visual({"type": "map", "title": "t", "source": m, "fields": {"asset_id": "asset_id", "lat": "lat", "lon": "lon"}})
+    assert spot["fields"] == {"lat": "lat", "lon": "lon", "label": "asset_id"}
+    # Nothing to infer from: an error that names the keys and the columns.
+    bad = show_visual({"type": "line_chart", "title": "t", "source": rid, "fields": {}})
+    assert "missing ['y']" in bad["error"] and "spill_count" in bad["error"]
+
+
 def test_ask_never_raises(use_model):
     use_model()                                     # no scripted replies: the model call fails
     a = api.ask("hello", "U-201")
