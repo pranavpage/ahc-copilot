@@ -28,7 +28,7 @@ Every run uses the same statuses, records and table in the terminal, the run log
 |---|---|---|---|---|
 | `FactRecall` | 2 | 1.0 | share of `must_include` items found in answer + citations + blocks (a whole number matches with or without ".0"); any `must_not_include` → FAIL | `found`, `missing` (each with `in_tool_results` and `tools`), `forbidden` |
 | `VisualMatch` | 1 | 1.0 | 1 if a block has the expected type; SKIP if `visual: none` | `expected`, `actual` |
-| `Judge` (L1 data) | 2 | 1.0 | LLM judge (JUDGE_MODEL, default `deepseek/deepseek-v4-pro` on OpenRouter): each `must_include` fact stated in any equivalent form (49 = 49.0, any date format), the rubric met, no contradiction; extra justification is fine. Only with `--judge` | `facts`, `rubric_met`, `contradictions`, `evaluation_model` |
+| `Judge` (L1 data) | 3 | 1.0 | LLM judge (JUDGE_MODEL, default `deepseek/deepseek-v4-pro` on OpenRouter) on the answer text **and its visuals**: the rubric met and no contradiction (facts are FactRecall's job); extra justification is fine. Score = mean of [rubric met, no contradictions]. Only with `--judge` | `rubric_met`, `contradictions`, `evaluation_model` |
 
 Records use deepeval `MetricData` names plus `status`, `version`, `details`. The report flags a
 comparison against a baseline made with different metric versions.
@@ -56,6 +56,7 @@ The report's category counts, by count, are the list of what to fix next.
 uv run pytest evals                          # all cases, live (OpenRouter)
 uv run pytest evals --cases Q2               # one case (--cases A1 = Q1–Q10, A2 = Q11–Q18)
 uv run pytest evals --judge                  # also the LLM judge
+uv run pytest evals --workers 1              # one case at a time (default 6 in parallel, env EVAL_WORKERS)
 EVAL_ASK=evals.fake:ask uv run pytest evals  # offline, no LLM (Q1 PASS, Q10 ERROR, others FAIL)
 uv run python -m evals.report                # report of the newest run (.md + .html)
 uv run python -m evals.report RUN --baseline evals/baseline.json
@@ -63,6 +64,12 @@ uv run python -m evals.report --record       # + one row in evals/history.csv
 uv run python -m evals.report --set-baseline # + evals/baseline.json from this run
 REASONING=1 uv run pytest evals              # ask OpenRouter for Gemma's reasoning (shown in the HTML)
 ```
+
+Cases run in parallel, `--workers` at a time. Cases linked by `follows` form one chain that runs
+in order (Q12a before Q12b and Q15a). All cases share one temp copy of the database, so once the
+copilot writes (corrections, notes, rules), a case can see writes from a case running at the same
+time; give each chain its own copy then. Case lines in the run log are in finish order; reports
+sort them by case ID.
 
 `pytest evals` prints the results table, the pass line and the run log path, and writes the HTML
 report. A FAIL test shows the failure block from the report; an ERROR test starts with `ERROR:`.

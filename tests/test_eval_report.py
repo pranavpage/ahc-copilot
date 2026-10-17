@@ -344,3 +344,29 @@ def test_pytest_evals_summary():
     assert "1/3 pass · 1 fail · 1 error" in out
     assert "run log:" in out and "uv run python -m evals.report --record" in out
     assert "ERROR: Q10 · ERROR" in out
+
+
+def test_chains_group_by_follows_and_keep_order():
+    from evals.cases import load_cases
+    from evals.runner import Runner
+
+    r = Runner(load_cases(), ask=None)
+    chains = r.chains(["Q1", "Q12b", "Q15a", "Q14b", "Q2"])
+    assert ["Q1"] in chains and ["Q2"] in chains and ["Q14a", "Q14b"] in chains
+    q12 = next(c for c in chains if "Q12b" in c)
+    assert q12[0] == "Q12a" and set(q12) == {"Q12a", "Q12b", "Q15a"}
+
+
+def test_run_all_parallel_matches_serial():
+    from evals.cases import load_cases
+    from evals.fake import ask
+    from evals.runner import Runner
+
+    cases = load_cases()
+    ids = [c.id for c in cases]
+    serial, parallel = Runner(cases, ask, selected=ids), Runner(cases, ask, selected=ids)
+    serial.run_all(workers=1)
+    parallel.run_all(workers=6)
+    assert {k: v.status for k, v in serial.results.items()} == \
+           {k: v.status for k, v in parallel.results.items()}
+    assert not any(v.as_dependency for v in parallel.results.values())
