@@ -23,6 +23,12 @@ ARGS = {
     "rca_due": {"area": "NE-07"},
     "search_docs": {"query": "spill"},
     "find_mentions": {"terms": ["test"]},
+    "gas_reports": {"start": "2026-01-01"},
+    "bypasses": {},
+    "regulator_letter_spills": {},
+    "freeze_checks": {"start": "2026-01-01", "end": "2026-02-28"},
+    "waiting_reasons": {"start": "2026-01-01", "end": "2026-10-16"},
+    "team_summary": {"team": "Northeast Production"},
 }
 
 
@@ -34,7 +40,9 @@ def test_modules_import():
 def test_all_tools_order():
     assert [t.__name__ for t in ALL_TOOLS] == [
         "identify_well", "well_status", "inspection_series", "downtime",
-        "spills", "well_records", "repair_costs", "rca_due", "search_docs", "find_mentions", "show_visual",
+        "spills", "well_records", "repair_costs", "rca_due", "search_docs", "find_mentions",
+        "gas_reports", "bypasses", "regulator_letter_spills", "freeze_checks", "waiting_reasons", "team_summary",
+        "show_visual",
     ]
 
 

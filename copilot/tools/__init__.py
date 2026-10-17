@@ -1,6 +1,7 @@
 """The agent's tools. A1 and A2 edit only their own module, never this file."""
 
 from copilot.tools.base import ToolResult
+from copilot.tools.compliance import COMPLIANCE_TOOLS
 from copilot.tools.feedback import FEEDBACK_TOOLS
 from copilot.tools.records import find_mentions, rca_due, repair_costs, search_docs, spills, well_records
 from copilot.tools.status import downtime, inspection_series, well_status
@@ -18,6 +19,7 @@ ALL_TOOLS = [
     rca_due,
     search_docs,
     find_mentions,
+    *COMPLIANCE_TOOLS,
     show_visual,
 ]
 
