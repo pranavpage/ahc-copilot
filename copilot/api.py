@@ -21,6 +21,7 @@ class Answer(BaseModel):
     tool_calls: list[ToolCall]
     model: str                 # the model that answered (main or fallback)
     error: str | None
+    trace: list[dict] = []     # every step of the turn, in order (see _step)
 
 
 def _text(message: BaseMessage) -> str:
@@ -28,6 +29,30 @@ def _text(message: BaseMessage) -> str:
     if isinstance(message.content, str):
         return message.content
     return "".join(p if isinstance(p, str) else p.get("text", "") for p in message.content)
+
+
+def _step(message: BaseMessage) -> dict | None:
+    """One trace step: kind "user", "ai" or "tool". Tool content is the text the model saw."""
+    if isinstance(message, HumanMessage):
+        return {"kind": "user", "text": _text(message)}
+    if isinstance(message, AIMessage):
+        usage = message.usage_metadata
+        meta = message.response_metadata or {}
+        return {
+            "kind": "ai",
+            "text": _text(message),
+            "reasoning": message.additional_kwargs.get("reasoning"),
+            "tool_calls": [{"id": c["id"], "name": c["name"], "args": c["args"]} for c in message.tool_calls],
+            "model": meta.get("model_name"),
+            "usage": {"input_tokens": usage["input_tokens"], "output_tokens": usage["output_tokens"]}
+            if usage else None,
+            "finish_reason": meta.get("finish_reason"),
+        }
+    if isinstance(message, ToolMessage):
+        failed = message.status == "error" or (isinstance(message.artifact, dict) and "error" in message.artifact)
+        return {"kind": "tool", "tool_call_id": message.tool_call_id, "name": message.name,
+                "content": _text(message), "status": "error" if failed else "ok"}
+    return None
 
 
 def build_answer(turn: list[BaseMessage]) -> Answer:
@@ -55,7 +80,8 @@ def build_answer(turn: list[BaseMessage]) -> Answer:
     final = ai_messages[-1] if ai_messages else None
     model = (final.response_metadata.get("model_name") if final else None) or get_settings().model
     return Answer(answer=texts[-1] if texts else "", blocks=blocks, citations=list(citations),
-                  tool_calls=tool_calls, model=model, error=None)
+                  tool_calls=tool_calls, model=model, error=None,
+                  trace=[step for step in map(_step, turn) if step is not None])
 
 
 def ask(question: str, user_id: str, thread_id: str | None = None) -> Answer:
