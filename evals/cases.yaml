@@ -1,0 +1,9 @@
+# Eval cases. Format: evals/cases.py (EvalCase). Owner: B.
+# must_include: strings that must appear in the answer or its visual (IDs, numbers, names).
+# Quote numbers so they stay strings.
+
+- id: Q1
+  question: "Is WELL-0001 producing oil right now? When was it last inspected, and by whom?"
+  visual: status_card
+  must_include: [INS-0001-0203, "Ryan Brooks", "3.2", CTX-0001-003]
+  rubric: "Says the recorded status 'active' is out of date."
