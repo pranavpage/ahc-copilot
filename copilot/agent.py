@@ -24,7 +24,8 @@ from copilot import memory, results
 from copilot.api import _text
 from copilot.llm import get_llm
 from copilot.prompt import build_system_prompt
-from copilot.tools import ALL_TOOLS, ToolResult
+from copilot.tools import ALL_TOOLS, FEEDBACK_TOOLS, ToolResult
+from copilot.tools.base import run_context
 from copilot.tools.visual import show_visual
 from copilot.tools.wells import well_id
 
@@ -121,15 +122,6 @@ def visual_tool() -> StructuredTool:
     )
 
 
-def _configurable(config: RunnableConfig | None) -> dict:
-    """The run's configurable, with `user_id` filled from the `x-user-id` header on the LangGraph
-    server (the server copies x-* request headers into configurable; the web UI sends it)."""
-    c = dict((config or {}).get("configurable") or {})
-    # The server also sets user_id = "" (its auth user, empty without auth), so the header wins.
-    c["user_id"] = c.get("x-user-id") or c.get("user_id") or None
-    return c
-
-
 def recall_conversations(query: str | None = None, limit: int = 5, *, config: RunnableConfig) -> ToolResult:
     """The current user's earlier conversations, newest first (never another user's).
 
@@ -140,7 +132,7 @@ def recall_conversations(query: str | None = None, limit: int = 5, *, config: Ru
     IDs, areas, topics). "Yesterday" means their most recent earlier conversation; the date does
     not have to match exactly. Say which conversation you used.
     """
-    c = _configurable(config)
+    c = run_context(config)
     user_id = c.get("user_id")
     if not memory.user_profile(user_id):
         return ToolResult(result_id="", kind="recall_conversations", rows=[], ids=[],
@@ -153,7 +145,7 @@ def recall_conversations(query: str | None = None, limit: int = 5, *, config: Ru
 
 def build_tools() -> list[StructuredTool]:
     tools = [visual_tool() if fn is show_visual else data_tool(fn) for fn in ALL_TOOLS]
-    return [*tools, data_tool(recall_conversations)]
+    return [*tools, *map(data_tool, FEEDBACK_TOOLS), data_tool(recall_conversations)]
 
 
 def _turn_text(messages: list[AnyMessage]) -> tuple[str, str]:
@@ -171,7 +163,7 @@ def remember(state, config: RunnableConfig) -> dict:
     messages = state["messages"]
     if not messages or not isinstance(messages[-1], AIMessage) or messages[-1].tool_calls:
         return {}
-    c = _configurable(config)
+    c = run_context(config)
     question, answer = _turn_text(messages)
     try:
         memory.remember(c.get("thread_id"), c.get("user_id"), question, answer)
@@ -182,7 +174,7 @@ def remember(state, config: RunnableConfig) -> dict:
 
 def _prompt(state, config: RunnableConfig) -> list[AnyMessage]:
     """System prompt built at each model call, so it follows the current DB_PATH and user."""
-    system = build_system_prompt(_configurable(config).get("user_id"))
+    system = build_system_prompt(run_context(config).get("user_id"))
     messages = list(state["messages"])
     if not MERGE_SYSTEM_PROMPT:
         return [SystemMessage(system), *messages]

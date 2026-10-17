@@ -19,6 +19,8 @@ ARGS = {
     "downtime": {"start": "2026-07-01", "end": "2026-10-16"},
     "spills": {},
     "well_records": {"asset_id": "WELL-0001", "start": "2026-07-01", "end": "2026-10-16"},
+    "repair_costs": {"asset_ids": ["WELL-0001"], "start": "2026-01-01", "end": "2026-10-16"},
+    "rca_due": {"area": "NE-07"},
     "search_docs": {"query": "spill"},
 }
 
@@ -31,7 +33,7 @@ def test_modules_import():
 def test_all_tools_order():
     assert [t.__name__ for t in ALL_TOOLS] == [
         "identify_well", "well_status", "inspection_series", "downtime",
-        "spills", "well_records", "search_docs", "show_visual",
+        "spills", "well_records", "repair_costs", "rca_due", "search_docs", "show_visual",
     ]
 
 
