@@ -14,7 +14,7 @@ Every run uses the same statuses, records and table in the terminal, the run log
 | `ERROR` | the metric raised (e.g. judge API error) | `ask()` raised, `Answer.error` is set, or a dependency case errored |
 | `FAIL` | score below threshold, or a forbidden item found | any metric is `FAIL` |
 | `PASS` | `success` is true | everything else |
-| `SKIP` | does not apply (no expected visual; Judge without `--judge` or rubric) | – |
+| `SKIP` | does not apply (no expected visual; Judge without `--judge`) | – |
 
 - A metric `ERROR` on a case that is not `ERROR` sets `incomplete: true` on the case.
 - **Case score:** mean score of the metrics that are not `SKIP` and not `ERROR` (0–1).
@@ -26,9 +26,9 @@ Every run uses the same statuses, records and table in the terminal, the run log
 
 | Metric | Version | Threshold | Score | `details` |
 |---|---|---|---|---|
-| `FactRecall` | 1 | 1.0 | share of `must_include` items found in answer + citations + blocks; any `must_not_include` → FAIL | `found`, `missing` (each with `in_tool_results` and `tools`), `forbidden` |
+| `FactRecall` | 2 | 1.0 | share of `must_include` items found in answer + citations + blocks (a whole number matches with or without ".0"); any `must_not_include` → FAIL | `found`, `missing` (each with `in_tool_results` and `tools`), `forbidden` |
 | `VisualMatch` | 1 | 1.0 | 1 if a block has the expected type; SKIP if `visual: none` | `expected`, `actual` |
-| `Judge` (GEval) | 1 | 0.5 | LLM judge on the rubric, FALLBACK_MODEL; only with `--judge` | `rubric`, `evaluation_model` |
+| `Judge` (L1 data) | 2 | 1.0 | LLM judge (JUDGE_MODEL, default `deepseek/deepseek-v4-pro` on OpenRouter): each `must_include` fact stated in any equivalent form (49 = 49.0, any date format), the rubric met, no contradiction; extra justification is fine. Only with `--judge` | `facts`, `rubric_met`, `contradictions`, `evaluation_model` |
 
 Records use deepeval `MetricData` names plus `status`, `version`, `details`. The report flags a
 comparison against a baseline made with different metric versions.

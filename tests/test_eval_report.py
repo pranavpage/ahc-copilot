@@ -225,7 +225,7 @@ def test_report_against_changed_baseline(offline_run, tmp_path):
     assert "- **regression** Q2: PASS → FAIL" in md and "- **regression** Q10: PASS → ERROR" in md
     assert "- fix Q1: FAIL → PASS" in md and "- score Q3: 0.60 → 0.00" in md
     assert "| FAIL → PASS |" in md and "2 regressions · 1 fixes" in md
-    assert "metric versions differ from the baseline:** FactRecall v0 → v1" in md
+    assert "metric versions differ from the baseline:** FactRecall v0 → v2" in md
 
 
 def test_truncated_log_is_incomplete(offline_run, tmp_path):
