@@ -90,6 +90,16 @@ Open http://localhost:3000. `--allow-blocking` is necessary: the tools use sync 
 without the flag every run fails with `BlockingError`. Each answer shows the text and the visual;
 "N tool calls" opens the data tool calls. The thread list is on the left.
 
+"Talking as" (top left) picks the user. The agent gets the user's name, role, team and areas in its
+system prompt. A new user starts a fresh thread list, so one user never sees another user's chats.
+The /api proxy sends the user to the agent as `x-user-id`.
+
+**Private memory.** After each answer, the agent writes an index of the chat to SQLite
+(`conversations`, `messages`, `conversation_entities`): the question, the answer, and the well /
+area / record IDs that the answer named, in order. In a later chat, `recall_conversations` reads
+this index for the current user only ("the three wells we discussed yesterday"). The user ID comes
+from the run config, never from the model.
+
 Users (`--user`): U-201 Michael Turner (production supervisor, the default), U-202 Jessica Reed
 (inspector), U-102 Jake Morales (operator), U-301 Robert Hayes (maintenance lead), U-401 Laura Simmons
 (HSE officer). All users: `sqlite3 data/copilot.db "select * from users"`.

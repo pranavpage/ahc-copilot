@@ -25,6 +25,19 @@ function crossOriginResponse() {
   );
 }
 
+// Sets config.configurable["x-user-id"] on a `run.start` command. Other bodies pass unchanged.
+function withUserInRunStart(body: string, userId: string): string {
+  try {
+    const msg = JSON.parse(body);
+    if (msg?.method !== "run.start" || typeof msg.params !== "object") return body;
+    const config = (msg.params.config ??= {});
+    config.configurable = { ...config.configurable, "x-user-id": userId };
+    return JSON.stringify(msg);
+  } catch {
+    return body;
+  }
+}
+
 async function handleRequest(req: NextRequest, method: string) {
   if (!isAllowedRequestContext(req)) return crossOriginResponse();
 
@@ -55,6 +68,13 @@ async function handleRequest(req: NextRequest, method: string) {
     const contentType = req.headers.get("content-type");
     if (contentType) headers.set("content-type", contentType);
 
+    // The user picked in the UI (app/user.tsx), sent as `x-user-id`. The REST run endpoints copy
+    // it into the run's configurable (langgraph.json: http.configurable_headers). The streaming
+    // `commands` endpoint drops headers, so withUserInRunStart also puts it in the run config.
+    const userId = req.cookies.get("copilot_user")?.value;
+    const validUserId = userId && /^[\w-]{1,64}$/.test(userId) ? userId : undefined;
+    if (validUserId) headers.set("x-user-id", validUserId);
+
     const options: RequestInit = {
       method,
       headers,
@@ -64,6 +84,9 @@ async function handleRequest(req: NextRequest, method: string) {
 
     if (["POST", "PUT", "PATCH"].includes(method)) {
       options.body = await req.text();
+      if (validUserId && path.endsWith("/commands")) {
+        options.body = withUserInRunStart(options.body, validUserId);
+      }
     }
 
     const res = await fetch(`${apiUrl}/${path}${queryString}`, options);

@@ -129,13 +129,15 @@ Expect Q9 (rules broken) to be the last one to pass. It needs records + reports 
      Measure the time. Target: less than 5 minutes.
 
 6. **Memory + multi-turn evals (Q11–Q18).**
-   - Episodic memory: LangGraph `SqliteStore`, namespace `("users", user_id, "episodes")`. Write the
-     wells/areas each answer was about. Private per user by namespace.
-   - Shared notes and claims: LangGraph store, namespace `("wells", asset_id, "notes")`.
+   - Episodic memory (done): SQLite `conversations` / `messages` / `conversation_entities`, written
+     by the `remember` post-model hook; read by `recall_conversations`, filtered by the user in the
+     run config. The user's name, role, team and areas are in the system prompt.
+   - Shared notes and claims: the SQLite `notes` table (`source = 'copilot'`, `claim_status`), not a
+     LangGraph store, so the existing tools already read them.
    - **Corrections and user rules: keep in the SQL tables** (`corrections`, `rules`). They change
      calculations (downtime, producing, spill class) and the SQL views apply them automatically. In the
      LG store, every tool would have to apply them in Python before each aggregation.
-   - Tools: `record_correction`, `add_note`, `set_rule`, `recall_conversations`.
+   - Tools: `record_correction`, `add_note`, `set_rule` (to do), `recall_conversations` (done).
    - Eval cases get `turns: [{user, message}]` and a fresh store per case.
 7. **UI: Streamlit, with a fixed generative-UI catalog. Details: `PLAN-UI.md`.** All Python, same process as the agent. `st.chat_message` for chat, a user picker in
    the sidebar. One render function per `show_visual` type: card = `st.metric` in a bordered container,

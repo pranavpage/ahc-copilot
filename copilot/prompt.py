@@ -1,9 +1,11 @@
 """The system prompt, built from the database at call time. Owner: D.
 
 No data values are written here: today, the areas, well types and users come from the DB.
+The user who is talking comes from the run config (`config["configurable"]["user_id"]`).
 """
 
 from copilot import db
+from copilot.memory import user_profile
 
 RULES = """\
 ## How to answer
@@ -55,8 +57,37 @@ your last message. The visual is shown with your answer. Never write a tool call
 "[Visual: ...]", images or links in the text."""
 
 
-def build_system_prompt() -> str:
-    """System prompt for the copilot: data lists from the DB, then the rules and the visual table."""
+def user_section(user_id: str | None) -> list[str]:
+    """Who is talking: name, ID, role, team and areas. Says so if the user is unknown."""
+    lines = ["## Who you are talking to"]
+    p = user_profile(user_id)
+    if p is None:
+        who = f"user ID '{user_id}', which is not in the users list" if user_id else "no user ID"
+        lines += [
+            f"- The user is not identified ({who}). Answer data questions, but ask who they are "
+            "before you use \"my\" / \"our\" or their earlier conversations.",
+        ]
+        return lines
+    team = f", team {p['team_name']}" if p["team_name"] else ""
+    areas = "; ".join(f"{a['name']} ({a['area_id']})" for a in p["areas"])
+    lines.append(f"- {p['name']} ({p['user_id']}), {p['role'].replace('_', ' ')}{team}."
+                 + (f" Team areas: {areas}." if areas else ""))
+    if p["wells_in_charge"]:
+        lines.append(f"- In charge of {p['wells_in_charge']} wells.")
+    lines += [
+        f"- \"I\", \"me\", \"my\" = {p['name']}. \"My area\" / \"our wells\" = the team areas above."
+        if areas else f"- \"I\", \"me\", \"my\" = {p['name']}.",
+        "- When they refer to an earlier chat (\"yesterday\", \"last time\", \"the wells we discussed\"), "
+        "call `recall_conversations` first. Their conversations are private: never use or mention "
+        "another user's conversations. If nothing matches, say that you have no such earlier "
+        "conversation with them.",
+    ]
+    return lines
+
+
+def build_system_prompt(user_id: str | None = None) -> str:
+    """System prompt for the copilot: data lists from the DB, the user who is talking, then the
+    rules and the visual table."""
     areas = db.rows("SELECT area_id, name FROM areas ORDER BY name")
     well_types = db.rows("SELECT well_type, COUNT(*) AS n FROM wells GROUP BY well_type ORDER BY well_type")
     users = db.rows("SELECT user_id, name, role FROM users ORDER BY user_id")
@@ -72,6 +103,8 @@ def build_system_prompt() -> str:
         "- Well types: " + "; ".join(f"{t['well_type']} ({t['n']} wells)" for t in well_types)
         + ". Each type has its own manual and rules.",
         "- Users: " + "; ".join(f"{u['name']} ({u['user_id']}, {u['role']})" for u in users) + ".",
+        "",
+        *user_section(user_id),
         "",
         RULES,
         "",
