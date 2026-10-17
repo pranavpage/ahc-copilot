@@ -13,6 +13,7 @@ DATA_TOOLS = ALL_TOOLS[:-1]
 
 # Minimal valid arguments for each data tool.
 ARGS = {
+    "identify_well": {"query": "WELL-0001"},
     "well_status": {},
     "inspection_series": {"asset_id": "WELL-0001", "start": "2026-07-01", "end": "2026-10-16"},
     "downtime": {"start": "2026-07-01", "end": "2026-10-16"},
@@ -29,7 +30,7 @@ def test_modules_import():
 
 def test_all_tools_order():
     assert [t.__name__ for t in ALL_TOOLS] == [
-        "well_status", "inspection_series", "downtime",
+        "identify_well", "well_status", "inspection_series", "downtime",
         "spills", "well_records", "search_docs", "show_visual",
     ]
 
