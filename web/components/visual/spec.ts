@@ -2,12 +2,26 @@
 export type Row = Record<string, unknown>;
 
 export type VisualBlock = {
-  type: "status_card" | "table" | "line_chart" | "bar_chart" | "map" | "heatmap";
+  type: "status_card" | "table" | "line_chart" | "bar_chart" | "stacked_bar_chart" | "map" | "heatmap";
   title: string;
   source: string;
   fields: Record<string, unknown>;
   rows: Row[];
 };
+
+/** Long rows (category, series, value) -> one object per category with a key per series. */
+export function pivot(rows: Row[], category: string, series: string, value: string) {
+  const seriesNames = [...new Set(rows.map((r) => String(r[series] ?? "—")))];
+  const byCat = new Map<string, Row>();
+  for (const r of rows) {
+    const cat = String(r[category] ?? "—");
+    const row = byCat.get(cat) ?? { [category]: cat };
+    const s = String(r[series] ?? "—");
+    row[s] = ((row[s] as number | undefined) ?? 0) + (Number(r[value]) || 0);
+    byCat.set(cat, row);
+  }
+  return { data: [...byCat.values()], seriesNames };
+}
 
 /** Column names in a fields value: a name, a list of names, or {field: name}. */
 export function names(value: unknown): string[] {
@@ -62,6 +76,7 @@ export function resolve(block: VisualBlock) {
   const y = pick("y").length
     ? pick("y")
     : pool.filter((c) => numeric(c) && dense(c) && c !== x && !c.endsWith("_threshold_c"));
+  const series = pick("series")[0] ?? firstOf(pool, (c) => !numeric(c) && !date(c), category ? [category] : []);
   const heatY = pick("y")[0] ?? firstOf(pool, (c) => !numeric(c), x ? [x] : []);
   const value = pick("value")[0] ?? firstOf(pool, numeric);
   // Heatmap cells: the value column if the model named one, else a count of rows.
@@ -72,7 +87,7 @@ export function resolve(block: VisualBlock) {
   const tableCols = pick("columns").length ? pick("columns") : mentioned.length ? mentioned : cols;
 
   return {
-    cols, x, y, category, value, heatY, heatValue, lat, lon, label, tableCols,
+    cols, x, y, category, series, value, heatY, heatValue, lat, lon, label, tableCols,
     unit: typeof f.unit === "string" ? f.unit : undefined,
   };
 }

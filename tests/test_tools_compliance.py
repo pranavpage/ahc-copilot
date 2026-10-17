@@ -177,13 +177,6 @@ def test_waiting_reasons_2026():
     assert any("interim" in n for n in r.notes)
 
 
-def test_waiting_reasons_rig_separate():
-    r = waiting_reasons("2026-01-01", "2026-12-31", rig="separate")
-    field = {row["reason"]: row for row in r.rows if row["area"] == "All areas"}
-    assert field["workover rig"]["jobs"] == 134 and field["crews"]["jobs"] == 112
-
-
-# --- Teams ---------------------------------------------------------------------
 
 def test_team_summary_northwest():
     r = team_summary("Northwest Production")

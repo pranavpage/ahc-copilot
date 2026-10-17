@@ -130,6 +130,21 @@ def recalled_pumps(area: str | None = None, include_replaced: bool = False) -> T
             by_area[r["area"]] = by_area.get(r["area"], 0) + 1
     if by_area:
         notes.append("By area: " + "; ".join(f"{k}: {v}" for k, v in sorted(by_area.items())))
+    names = {r["name"].split()[0].lower(): r for r in db.rows("SELECT user_id, name FROM users")}
+    told = {}
+    for n in db.rows("SELECT asset_id, author_user_id FROM notes WHERE source = 'copilot'"):
+        told.setdefault(n["author_user_id"], set()).add(n["asset_id"])
+    for r in rows:
+        for u in r["user_reports"]:
+            for first, person in names.items():
+                if (first in u["text"].lower() and person["name"] != u["reported_by"]
+                        and r["asset_id"] not in told.get(person["user_id"], set())):
+                    own = sorted(told.get(person["user_id"], set()))
+                    u["hearsay_check"] = (f"second-hand: {u['reported_by']} says {person['name']} said it, but "
+                                          f"{person['name']} told the copilot nothing about {r['asset_id']}"
+                                          + (f" (their own reports are about {', '.join(own)})" if own else "")
+                                          + ". Keep the well on the list; ask for the work order.")
+                    notes.append(f"{r['asset_id']}: {u['hearsay_check']}")
     if any(r["user_reports"] for r in rows):
         notes.append("Some wells have user reports (user_reports). They are not work orders: say who "
                      "reported what and when, mark them unconfirmed, and keep the well in the list.")
@@ -366,6 +381,19 @@ def field_temperature(start: str, end: str, group_by: str = "area") -> ToolResul
     for wt in sorted({r["well_type"] for r in found}):
         notes.append(f"Within {wt} only, mean wellhead °C: "
                      + "; ".join(f"{g} {v}" for g, v in ranking([r for r in found if r["well_type"] == wt])))
+    spreads = []
+    for wt in sorted({r["well_type"] for r in found}):
+        rk = ranking([r for r in found if r["well_type"] == wt])
+        if len(rk) > 1:
+            spreads.append(rk[0][1] - rk[-1][1])
+    overall = ranking(found)
+    if spreads and max(spreads) < 1.5 and len(overall) > 1 and overall[0][1] - overall[-1][1] >= 1.5:
+        share = {g: round(100 * sum(x["well_type"] == "T500" for x in found if x["grp"] == g)
+                          / max(1, sum(1 for x in found if x["grp"] == g))) for g, _ in overall}
+        notes.insert(0, f"CONCLUSION: {overall[0][0]} reads hottest every month, but within each well type the "
+                        f"groups differ by less than {max(spreads):.1f} °C. The difference is the well mix, not the "
+                        f"place: T500 (ESP) share of readings " + "; ".join(f"{g} {v}%" for g, v in share.items())
+                        + ". Say both: which group reads hotter, and that like-for-like no region runs hotter.")
     notes.append("Compare within well type before blaming geography: T500 (ESP) wells run hotter by design "
                  "(T500 manual §3), so an area with many T500 wells looks hotter overall.")
     return _result(kind, rows, [], notes)

@@ -46,12 +46,46 @@ def user_profile(user_id: str | None) -> dict | None:
     if not found:
         return None
     profile = found[0]
+    # The team's wells are the wells whose own (current) team is the user's team: a well's team
+    # beats its area's team (some wells moved teams, e.g. WELL-0051 Southwest -> Southeast).
     profile["areas"] = db.rows(
-        "SELECT a.area_id, a.name FROM areas a JOIN users u ON u.team_id = a.team_id "
-        "WHERE u.user_id = ? ORDER BY a.name",
+        """
+        SELECT a.area_id, a.name, COUNT(*) AS team_wells,
+               (SELECT COUNT(*) FROM wells x WHERE x.area_id = a.area_id) AS area_wells
+        FROM wells w JOIN areas a ON a.area_id = w.area_id JOIN users u ON u.team_id = w.team_id
+        WHERE u.user_id = ? GROUP BY a.area_id ORDER BY a.name
+        """,
         (user_id,),
     )
+    profile["team_wells"] = sum(a["team_wells"] for a in profile["areas"])
     return profile
+
+
+def set_preference(user_id: str, preference: str, conversation_id: str | None = None) -> dict:
+    """Save a private, lasting preference of this user. Returns the saved row."""
+    now = _now()
+    with closing(db.connect(read_only=False)) as conn, conn:
+        pref_id = conn.execute(
+            "INSERT INTO user_preferences (user_id, preference, created_at, conversation_id, status) "
+            "VALUES (?, ?, ?, ?, 'active')", (user_id, preference.strip(), now, conversation_id)).lastrowid
+    return {"pref_id": pref_id, "user_id": user_id, "preference": preference.strip(), "created_at": now,
+            "status": "active"}
+
+
+def retract_preference(user_id: str, pref_id: int) -> bool:
+    """Retract one of this user's preferences. False if it is not theirs or not active."""
+    with closing(db.connect(read_only=False)) as conn, conn:
+        n = conn.execute("UPDATE user_preferences SET status = 'retracted' WHERE pref_id = ? AND user_id = ? "
+                         "AND status = 'active'", (pref_id, user_id)).rowcount
+    return n > 0
+
+
+def preferences(user_id: str | None) -> list[dict]:
+    """This user's active preferences, oldest first. Never another user's."""
+    if not user_id:
+        return []
+    return db.rows("SELECT pref_id, preference, created_at FROM user_preferences "
+                   "WHERE user_id = ? AND status = 'active' ORDER BY pref_id", (user_id,))
 
 
 def entities(text: str) -> list[tuple[str, str]]:
@@ -134,3 +168,41 @@ def recall(user_id: str, exclude_thread_id: str | None = None, query: str | None
         if len(out) >= limit:
             break
     return out
+
+
+def preference_settings(user_id: str | None) -> dict:
+    """What the data tools can apply for this user's preferences, read from their words:
+    {"sort_wells_by_area": bool, "costs_in_thousands": bool}."""
+    text = " ".join(p["preference"] for p in preferences(user_id)).lower()
+    return {
+        "sort_wells_by_area": "area" in text and bool(re.search(r"\b(sort|order|group)", text)),
+        "costs_in_thousands": bool(re.search(r"thousand|\$\s?k\b|\bk\$|\bk usd|\bin k\b", text)),
+    }
+
+
+def _is_cost(column: str, rows: list[dict]) -> bool:
+    return ("cost" in column and column.endswith("usd") and not column.endswith("_k_usd")
+            and any(isinstance(r.get(column), (int, float)) for r in rows))
+
+
+def apply_preferences(rows: list[dict], settings: dict) -> tuple[list[dict], list[str]]:
+    """A user's saved preferences on a tool result: wells sorted by area, then well ID (not ranked
+    rows), and each cost column also in thousands of dollars (`<cost>_k_usd`, 1 decimal).
+    Returns (rows, notes); the rows are unchanged if nothing applies."""
+    notes = []
+    if not rows:
+        return rows, notes
+    if settings.get("costs_in_thousands"):
+        costs = [c for c in dict.fromkeys(k for r in rows for k in r) if _is_cost(c, rows)]
+        if costs:
+            rows = [{**r, **{c.removesuffix("_usd") + "_k_usd": None if r.get(c) is None
+                             else round(r[c] / 1000, 1) for c in costs}} for r in rows]
+            notes.append(f"costs also given in thousands of dollars ({', '.join(c.removesuffix('_usd') + '_k_usd' for c in costs)}): "
+                         "the user's saved preference, show costs as $k")
+    if settings.get("sort_wells_by_area") and all(r.get("asset_id") for r in rows) and len(rows) > 1 \
+            and not any("rank" in k.lower() for k in rows[0]):
+        areas = {a["asset_id"]: a["name"] for a in db.rows(
+            "SELECT w.asset_id, a.name FROM wells w JOIN areas a ON a.area_id = w.area_id")}
+        rows = sorted(rows, key=lambda r: (areas.get(r["asset_id"], ""), r["asset_id"]))
+        notes.append("rows sorted by area, then well ID: the user's saved preference; keep this order")
+    return rows, notes
