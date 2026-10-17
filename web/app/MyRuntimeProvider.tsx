@@ -1,12 +1,16 @@
 "use client";
 
+import { useState } from "react";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { useStreamRuntime } from "@assistant-ui/react-langchain";
 import { Client } from "@langchain/langgraph-sdk";
+import { langGraphThreadList } from "./threadList";
 
 export function MyRuntimeProvider({
+  userId,
   children,
 }: Readonly<{
+  userId: string;
   children: React.ReactNode;
 }>) {
   const apiUrl =
@@ -15,15 +19,15 @@ export function MyRuntimeProvider({
       ? new URL("/api", window.location.href).href
       : undefined);
 
+  // Stable for the life of the provider (it is keyed by user ID).
+  const [threadList] = useState(() =>
+    langGraphThreadList(new Client(apiUrl ? { apiUrl } : {}), userId),
+  );
+
   const runtime = useStreamRuntime({
     assistantId: process.env.NEXT_PUBLIC_LANGGRAPH_ASSISTANT_ID!,
     apiUrl,
-    create: async () => {
-      const { thread_id } = await new Client(
-        apiUrl ? { apiUrl } : {},
-      ).threads.create();
-      return { externalId: thread_id };
-    },
+    unstable_threadListAdapter: threadList,
   });
 
   return (

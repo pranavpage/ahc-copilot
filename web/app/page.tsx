@@ -53,13 +53,13 @@ function ThreadWithSuggestions() {
   );
 }
 
-// One runtime per user (key = user ID): changing the user starts a fresh thread list, so one
+// One runtime per user (key = user ID): changing the user loads that user's thread list, so one
 // user's chats are never shown to another.
 function Chat() {
   const { userId } = useUser();
   if (!userId) return null;
   return (
-    <MyRuntimeProvider key={userId}>
+    <MyRuntimeProvider key={userId} userId={userId}>
       <div className="flex h-dvh">
         <div className="flex max-w-md flex-col">
           <UserPicker />

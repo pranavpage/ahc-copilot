@@ -16,6 +16,7 @@
     "@assistant-ui/react-markdown": "^0.14.23",
     "@langchain/langgraph-sdk": "^1.12.2",
     "@langchain/react": "^1.2.2",
+    "assistant-stream": "^0.3.52",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.4.0",
     "leaflet": "^1.9.4",

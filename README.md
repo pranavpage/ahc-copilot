@@ -88,10 +88,18 @@ cd web && cp .env.example .env.local && npm install && npm run dev -- -p 3000
 
 Open http://localhost:3000. `--allow-blocking` is necessary: the tools use sync SQLite calls, and
 without the flag every run fails with `BlockingError`. Each answer shows the text and the visual;
-"N tool calls" opens the data tool calls. The thread list is on the left.
+"N tool calls" opens the data tool calls. The thread list is on the left. It is kept on the LangGraph
+server (thread metadata `user_id`, `title`), and each thread is named after its first message.
+
+For a demo, seed some threads with eval questions (needs the agent API running):
+
+```bash
+uv run python scripts/seed_demo.py                   # Q1-Q10, Q14a, Q18 as U-201 (Michael Turner)
+uv run python scripts/seed_demo.py --cases Q1 --user U-202
+```
 
 "Talking as" (top left) picks the user. The agent gets the user's name, role, team and areas in its
-system prompt. A new user starts a fresh thread list, so one user never sees another user's chats.
+system prompt. Each user sees only their own threads.
 The /api proxy sends the user to the agent as `x-user-id`.
 
 **Private memory.** After each answer, the agent writes an index of the chat to SQLite
