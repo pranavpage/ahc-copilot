@@ -292,6 +292,22 @@ def inspection_series(asset_id: str, start: str, end: str) -> ToolResult:
     return _result(kind, rows, ids, notes, truncated)
 
 
+def _repairs_around(asset_id: str, on: str) -> list[dict]:
+    """Corrective repairs under way on `on`, or started within a week either side of it."""
+    return db.rows(
+        """
+        SELECT maintenance_id, substr(started_at, 1, 10) AS started, substr(completed_at, 1, 10) AS completed,
+               equipment_kind, issue
+        FROM maintenance
+        WHERE asset_id = :a AND maintenance_type = 'corrective'
+          AND substr(started_at, 1, 10) <= date(:on, '+7 days')
+          AND coalesce(substr(completed_at, 1, 10), :on) >= date(:on, '-7 days')
+        ORDER BY started_at
+        """,
+        {"a": asset_id, "on": on},
+    )
+
+
 def downtime(
     start: str,
     end: str,
@@ -304,6 +320,8 @@ def downtime(
     Each inspection that finds a well not producing counts as `downtime_days_per_inspection`
     days (from the rules). Filter by well or area; `top_n` keeps the first N wells (ties at
     the cut are kept). Wells with no downtime are left out unless asked for by `asset_id`.
+    For one well (`asset_id`), `down_details` has each down inspection's reading (wellhead and air
+    °C, °C above air vs. the threshold) and the corrective repairs around it that explain the stop.
     """
     kind = "downtime"
     if note := _bad_dates(start, end):
@@ -324,7 +342,8 @@ def downtime(
     found = db.rows(
         f"""
         SELECT e.asset_id, e.well_type, a.name AS area_name, e.inspection_id, e.inspected_date,
-               e.is_producing, e.downtime_days, e.correction_ids
+               e.is_producing, e.downtime_days, e.correction_ids, e.wellhead_temp_c, e.ambient_temp_c,
+               e.temp_delta_c, e.producing_threshold_c
         FROM inspections_effective e
         JOIN areas a ON a.area_id = e.area_id
         WHERE {" AND ".join(where)}
@@ -357,6 +376,13 @@ def downtime(
             w["down_inspections"] += 1
             w["down_dates"].append(r["inspected_date"])
             w["down_inspection_ids"].append(r["inspection_id"])
+            if asset_id:
+                w.setdefault("down_details", []).append({
+                    "inspection_id": r["inspection_id"], "inspected_date": r["inspected_date"],
+                    "wellhead_temp_c": float(r["wellhead_temp_c"]), "ambient_temp_c": float(r["ambient_temp_c"]),
+                    "temp_delta_c": round(r["temp_delta_c"], 1), "producing_threshold_c": r["producing_threshold_c"],
+                    "repairs": _repairs_around(r["asset_id"], r["inspected_date"]),
+                })
             corrections.setdefault(r["asset_id"], []).extend(_correction_ids(r["correction_ids"]))
 
     rows = [w for w in per_well.values() if w["downtime_days"] > 0 or w["asset_id"] == asset_id]
@@ -385,5 +411,6 @@ def downtime(
     ids = []
     for w in rows:
         ids += w["down_inspection_ids"] + corrections.get(w["asset_id"], [])
+        ids += [m["maintenance_id"] for d in w.get("down_details", []) for m in d["repairs"]]
     ids += _rule_citations(wells, [DOWNTIME_RULE, PRODUCING_RULE])
     return _result(kind, rows, ids, notes, truncated)

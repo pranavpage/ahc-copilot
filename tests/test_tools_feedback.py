@@ -6,7 +6,7 @@ from langchain_core.messages import AIMessage
 from copilot import api, db
 from copilot.agent import build_tools
 from copilot.config import get_settings
-from copilot.tools import spills, well_records, well_status
+from copilot.tools import rca_due, spills, well_records, well_status
 from copilot.tools.feedback import add_note, record_correction, set_rule
 from evals.runner import db_snapshot
 from tests.test_agent_offline import call, use_model  # noqa: F401 - fixture
@@ -104,6 +104,10 @@ def test_user_rule_applies_at_its_scope_only():
     detail = next(x["detail"] for x in well_records("WELL-0120", "2025-10-16", "2026-10-16").rows
                   if x.get("rule") == "RCA" and "pump_jack" in x["detail"])
     assert "Michael Turner" in detail
+    due = rca_due(area="NE-07", equipment_kind="pump_jack")
+    assert [x["asset_id"] for x in due.rows] == ["WELL-0108", "WELL-0120", "WELL-0121", "WELL-0138"]
+    assert any(n.startswith("added only because of a user rule") and "WELL-0120" in n and "WELL-0108" not in n
+               for n in due.notes)
 
 
 def test_nothing_is_recorded_without_a_known_user():

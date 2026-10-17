@@ -15,6 +15,7 @@ from copilot.tools.base import ToolResult, correction_details, correction_note, 
 MAX_ROWS = 200
 
 GroupField = Literal["area", "month", "asset_id", "spill_class"]
+Section = Literal["findings", "repairs", "events", "report_findings", "notes"]
 
 # Section order in well_records. Findings come first so the row cap never drops them.
 SECTIONS = ["findings", "repairs", "events", "report_findings", "notes"]
@@ -101,13 +102,18 @@ def spills(
     asset_id: str | None = None,
     area: str | None = None,
     group_by: list[GroupField] | None = None,
+    reportable_only: bool = False,
+    not_contained_only: bool = False,
 ) -> ToolResult:
     """Real spills (after corrections) discovered between start and end (inclusive).
 
     Per spill: inspection ID, well, area, lat/lon, date, volume (bbl), class from the Spill
     Response SOP, reportable yes/no (with the spill report filed, or when it was due), the repair
     and report, containment hours vs. the limit, and who corrected the detection (`corrections`).
-    Filter by well or area. Notes list detections that corrections cancelled and missing reports.
+    Notes on the spill (e.g. people who disagree about it) are in `notes_on_spill`.
+    Filter by well or area; `reportable_only` keeps spills that needed a report to the regulator,
+    `not_contained_only` keeps spills not contained within the limit (so a table shows only those).
+    Notes list detections that corrections cancelled (and why), and missing reports.
     `group_by` (any of "area", "month", "asset_id", "spill_class") returns one row per group
     with spill_count and total_bbl instead, e.g. ["area", "month"] for a heatmap.
 
@@ -188,10 +194,37 @@ def spills(
         if correction_ids:
             row["corrections"] = correction_details(correction_ids)
             notes += [correction_note(c) for c in row["corrections"]]
+        if reportable_only and not row["is_reportable"]:
+            continue
+        if not_contained_only and row["contained_in_time"] is not False:
+            continue
         rows.append(row)
         ids += [r["inspection_id"], r["maintenance_id"], r["report_event_id"], *correction_ids]
     if any(r["containment_limit_hours"] is None for r in found):
         notes.append("no rule found: containment_max_hours (for some wells)")
+    if reportable_only or not_contained_only:
+        kept = {r["inspection_id"] for r in rows}
+        ids = [i for i in ids if i and (not i.startswith("INS-") or i in kept)]
+        notes.append(f"{len(rows)} of {len(found)} spills kept by the filter "
+                     f"({'reportable' if reportable_only else ''}{' and ' if reportable_only and not_contained_only else ''}"
+                     f"{'not contained in time' if not_contained_only else ''})")
+
+    # Notes that name the spill's inspection: people who agree or disagree with the detection.
+    for row in rows:
+        linked = db.rows("""
+            SELECT n.note_id, u.name AS author_name, substr(n.created_at, 1, 10) AS date, n.text
+            FROM notes n LEFT JOIN users u ON u.user_id = n.author_user_id
+            WHERE n.asset_id = :a AND n.note_type <> 'correction'
+              AND (n.inspection_id = :i OR n.text LIKE '%' || :i || '%')
+            ORDER BY n.created_at""", {"a": row["asset_id"], "i": row["inspection_id"]})
+        if linked:
+            row["notes_on_spill"] = linked
+            ids += [n["note_id"] for n in linked]
+            if len(rows) > 20:
+                continue
+            notes.append(f"{row['inspection_id']}: {len(linked)} note(s) on this spill: " + "; ".join(
+                f"{n['note_id']} by {n['author_name']}: '{n['text']}'" for n in linked)
+                + ". None is a formal correction, so the detection stands; show both sides")
 
     spill_rules = db.rows(
         "SELECT DISTINCT doc_id, section_path, rule_id FROM well_rules WHERE rule_key IN"
@@ -201,18 +234,31 @@ def spills(
     ids += [_cite(r) for r in spill_rules]
 
     cancelled = db.rows(f"""
-        SELECT e.inspection_id, e.correction_ids FROM inspections_effective e
+        SELECT e.inspection_id, e.inspected_date, e.correction_ids FROM inspections_effective e
         WHERE e.raw_spill_detected = 1 AND e.spill_detected = 0 AND {where.format(t='e')}
         ORDER BY e.inspected_at""", params)
     if cancelled:
         cor = [c for r in cancelled for c in (r["correction_ids"] or "").split()]
+        why = {c["correction_id"]: c for c in correction_details(cor)}
+        if len(cancelled) > 5:      # a field-wide query: IDs only, to keep the result small
+            why = {}
         notes.append(
-            f"{len(cancelled)} detection(s) cancelled by corrections and not counted: "
-            + ", ".join(f"{r['inspection_id']} ({r['correction_ids']})" for r in cancelled))
-        ids += [r["inspection_id"] for r in cancelled] + cor
+            f"{len(cancelled)} detection(s) cancelled by corrections and not counted (say so): " + "; ".join(
+                f"{r['inspection_id']} ({r['inspected_date']}): " + ", ".join(
+                    f"{c} by {why[c]['corrected_by']}" + (f", note {why[c]['note_id']}" if why[c].get("note_id") else "")
+                    + f": '{why[c]['reason']}'" for c in (r["correction_ids"] or "").split() if c in why)
+                if why else f"{r['inspection_id']} ({r['correction_ids']})"
+                for r in cancelled))
+        ids += [r["inspection_id"] for r in cancelled] + cor + [c["note_id"] for c in why.values() if c.get("note_id")]
 
     if group_by:
         rows = _group(rows, group_by)
+        if len(group_by) == 2:
+            totals: dict = {}
+            for g in rows:
+                totals[g[group_by[0]]] = totals.get(g[group_by[0]], 0) + g["spill_count"]
+            notes.append(f"spill_count totals per {group_by[0]} (state them): " + ", ".join(
+                f"{k} {v}" for k, v in sorted(totals.items(), key=lambda kv: -kv[1])))
     if not rows:
         notes.append("no spills match the filter")
     return _result(kind, rows, ids, notes)
@@ -240,7 +286,7 @@ def _group(rows: list[dict], group_by: list[str]) -> list[dict]:
 # well_records
 # ----------------------------------------------------------------------------
 
-def well_records(asset_id: str, start: str, end: str) -> ToolResult:
+def well_records(asset_id: str, start: str, end: str, sections: list[Section] | None = None) -> ToolResult:
     """All records of one well between start and end (inclusive), to judge it against the rules.
 
     One result with a `section` per row:
@@ -248,8 +294,11 @@ def well_records(asset_id: str, start: str, end: str) -> ToolResult:
       for SR-01 (spill report), SR-02 (containment), SR-03 (cleanup verification),
       RC-04 (NOV response), RCA (repeat corrective repairs, counted back from today)
       and RC-02 (yearly flowline integrity test).
-    - repairs (with report and containment hours), events (plus every open event),
-      report_findings (report compliance rows not "Met"), notes valid in the period.
+    - repairs (with report, containment hours and cost; notes give the cost total), events (plus
+      every open event), report_findings (report compliance rows not "Met"), notes valid in the
+      period or written in it.
+    `sections` keeps only those sections, e.g. ["findings"] for a table of the rule checks.
+    Report each finding with its status as given: breach, open (still to do) or met.
 
     Owner: A2.
     """
@@ -305,9 +354,14 @@ def well_records(asset_id: str, start: str, end: str) -> ToolResult:
         if f.get("cite"):
             ids.append(f["cite"])
 
+    if repairs:
+        total = sum(r["cost_total_usd"] or 0 for r in repairs)
+        notes.append(f"{len(repairs)} repair(s) from {start} to {end}, cost total USD {_num(round(total, 2))}")
     rows = []
     for section, items in [("findings", findings), ("repairs", repairs), ("events", events),
                            ("report_findings", report_findings), ("notes", well_notes)]:
+        if sections and section not in sections:
+            continue
         rows += [{"section": section, **r} for r in items]
     rows.sort(key=lambda r: (SECTIONS.index(r["section"]), r.get("date") or ""))
     return _result(kind, rows, ids, notes)
@@ -363,7 +417,8 @@ def _findings(asset_id: str, start: str, end: str, today: str,
                     over = hrs is not None and hrs > limit
                     f |= {"status": "breach" if over else "met", "ids": base_ids + [rep["event_id"]],
                           "detail": f"spill report {rep['event_id']} filed {_num(hrs)} h after discovery of "
-                                    f"{sid} (limit {_num(limit)} h)"}
+                                    f"{s['spill_class']} spill {sid} ({s['spill_volume_bbl']} bbl) "
+                                    f"(limit {_num(limit)} h)"}
                 out.append(f)
 
         # SR-02: contained within the limit.
@@ -407,17 +462,18 @@ def _findings(asset_id: str, start: str, end: str, today: str,
             responses = [e for e in events if e["event_type"] == "nov_response_filed" and e["date"] >= nov["date"]
                          and (not nov["related_inspection_id"]
                               or e["related_inspection_id"] == nov["related_inspection_id"])]
+            fine = (f"; fine USD {_num(nov['fine_usd'])} ({nov['status']})" if nov["fine_usd"] else "")
             f = {"rule": "RC-04", "date": nov["date"], "cite": _cite(r), "due_date": due,
                  "ids": [nov["event_id"]] + [e["event_id"] for e in responses[:1]]}
             if responses:
                 resp = responses[0]
                 f |= {"status": "met" if resp["date"] <= due else "breach",
                       "detail": f"notice {nov['event_id']} answered by {resp['event_id']} on {resp['date']} "
-                                f"(due {due}); notice status {nov['status']}"}
+                                f"(due {due}); notice status {nov['status']}{fine}"}
             else:
                 f |= {"status": "breach" if today > due else "open",
                       "detail": f"notice {nov['event_id']} ({nov['date']}) has no nov_response_filed event; "
-                                f"due {due}; notice status {nov['status']}"}
+                                f"due {due}; notice status {nov['status']}{fine}"}
             out.append(f)
 
     # RCA: corrective repairs per equipment kind in the window before today.
@@ -464,6 +520,125 @@ def _findings(asset_id: str, start: str, end: str, today: str,
             out.append(f)
 
     return out
+
+
+# ----------------------------------------------------------------------------
+# repair_costs, rca_due
+# ----------------------------------------------------------------------------
+
+def repair_costs(asset_ids: list[str], start: str, end: str) -> ToolResult:
+    """What repairs cost per well, between start and end (inclusive, by the repair's start date).
+
+    Per well: number of repairs, total, labor and parts cost (USD), corrective and scheduled cost,
+    downtime hours and the repair IDs. Use it for "what have repairs cost"; take the totals from
+    here and never add costs up yourself. Wells with no repairs get a row with 0.
+    """
+    kind = "repair_costs"
+    if note := _date_note(start=start, end=end):
+        return _empty(kind, note)
+    unknown = [a for a in asset_ids if not _well_exists(a)]
+    notes = [f"unknown well(s): {', '.join(unknown)}"] if unknown else []
+    found = db.rows("""
+        SELECT asset_id, maintenance_id, maintenance_type, cost_total_usd, cost_labor_usd, cost_parts_usd,
+               downtime_hours
+        FROM maintenance
+        WHERE asset_id IN (SELECT value FROM json_each(:ids)) AND substr(started_at, 1, 10) BETWEEN :start AND :end
+        ORDER BY asset_id, started_at, maintenance_id""",
+        {"ids": json.dumps(asset_ids), "start": start, "end": end})
+    rows, ids = [], []
+    for a in asset_ids:
+        if a in unknown:
+            continue
+        ms = [m for m in found if m["asset_id"] == a]
+        cost = lambda key, ms=ms: _num(round(sum(m[key] or 0 for m in ms), 2))  # noqa: E731
+        rows.append({
+            "asset_id": a, "repairs": len(ms), "cost_total_usd": cost("cost_total_usd"),
+            "cost_labor_usd": cost("cost_labor_usd"), "cost_parts_usd": cost("cost_parts_usd"),
+            "corrective_cost_usd": _num(round(sum(m["cost_total_usd"] or 0 for m in ms
+                                                  if m["maintenance_type"] == "corrective"), 2)),
+            "scheduled_cost_usd": _num(round(sum(m["cost_total_usd"] or 0 for m in ms
+                                                 if m["maintenance_type"] == "scheduled"), 2)),
+            "downtime_hours": sum(m["downtime_hours"] or 0 for m in ms),
+            "maintenance_ids": [m["maintenance_id"] for m in ms],
+        })
+        ids += [m["maintenance_id"] for m in ms]
+    if len(rows) > 1:
+        notes.append(f"all {len(rows)} wells together: USD {_num(round(sum(r['cost_total_usd'] for r in rows), 2))}")
+    return _result(kind, rows, ids, notes)
+
+
+def rca_due(area: str | None = None, asset_ids: list[str] | None = None,
+            equipment_kind: str | None = None) -> ToolResult:
+    """Wells that need a root-cause analysis (RCA): repeated corrective repairs on the same equipment.
+
+    Counts each well's corrective repairs per equipment kind in its rule window before today
+    (`rca_window_months`) against its limit (`rca_corrective_count`): the manual for its well type,
+    or a user rule, which wins within its scope. Rows: only the wells and equipment at or over the
+    limit, with the count, the limit, the rule citation and the repair IDs. Filter by area or wells,
+    and by `equipment_kind` (pump_jack, flowline, wellhead, downhole_pump, rod_string, separator).
+    """
+    kind = "rca_due"
+    where, params = ["1"], {"today": db.today()}
+    if area:
+        area_id, note = _resolve_area(area)
+        if note:
+            return _empty(kind, note)
+        where.append("w.area_id = :area_id")
+        params["area_id"] = area_id
+    if asset_ids:
+        where.append("w.asset_id IN (SELECT value FROM json_each(:ids))")
+        params["ids"] = json.dumps(asset_ids)
+    if equipment_kind:
+        where.append("m.equipment_kind = :eq")
+        params["eq"] = equipment_kind
+    found = db.rows(f"""
+        SELECT w.asset_id, w.well_type, a.name AS area_name, m.equipment_kind,
+               c.value AS rca_limit, c.rule_id, c.source, c.doc_id, c.section_path, c.author_user_id,
+               win.value AS window_months, date(:today, '-' || CAST(win.value AS INTEGER) || ' months') AS since,
+               COUNT(*) AS corrective_repairs, json_group_array(m.maintenance_id) AS ids,
+               MAX(substr(m.started_at, 1, 10)) AS last_repair
+        FROM wells w
+        JOIN areas a ON a.area_id = w.area_id
+        JOIN well_rules c ON c.asset_id = w.asset_id AND c.rule_key = 'rca_corrective_count'
+        JOIN well_rules win ON win.asset_id = w.asset_id AND win.rule_key = 'rca_window_months'
+        JOIN maintenance m ON m.asset_id = w.asset_id AND m.maintenance_type = 'corrective'
+         AND substr(m.started_at, 1, 10) BETWEEN date(:today, '-' || CAST(win.value AS INTEGER) || ' months')
+                                             AND :today
+        WHERE {" AND ".join(where)}
+        GROUP BY w.asset_id, m.equipment_kind
+        ORDER BY w.asset_id, m.equipment_kind""", params)
+    rows, ids, by_user = [], [], []
+    for r in found:
+        if r["corrective_repairs"] < r["rca_limit"]:
+            continue
+        cite = _cite(r)
+        rows.append({
+            "asset_id": r["asset_id"], "well_type": r["well_type"], "area_name": r["area_name"],
+            "equipment_kind": r["equipment_kind"], "corrective_repairs": r["corrective_repairs"],
+            "rca_limit": _num(r["rca_limit"]), "window": f"{r['since']} to {params['today']}",
+            "rule": cite, "rule_source": r["source"], "last_repair": r["last_repair"],
+            "maintenance_ids": sorted(json.loads(r["ids"])),
+        })
+        ids += rows[-1]["maintenance_ids"] + [cite]
+        manual = db.rows("SELECT value, doc_id, section_path FROM rules WHERE rule_key = 'rca_corrective_count' "
+                         "AND source = 'document' AND status = 'active' AND (well_type = ? OR well_type IS NULL) "
+                         "ORDER BY well_type IS NULL LIMIT 1", (r["well_type"],))
+        if r["source"] == "user" and manual and r["corrective_repairs"] < manual[0]["value"]:
+            by_user.append(f"{r['asset_id']} ({r['well_type']}, {r['corrective_repairs']} repairs; "
+                           f"the manual {manual[0]['doc_id']} says {_num(manual[0]['value'])})")
+    applied = db.rows(f"""
+        SELECT w.well_type, c.value, c.rule_id, c.source, c.doc_id, c.section_path, c.author_user_id,
+               COUNT(*) AS wells
+        FROM wells w JOIN well_rules c ON c.asset_id = w.asset_id AND c.rule_key = 'rca_corrective_count'
+        WHERE {" AND ".join(x for x in where if not x.startswith("m."))}
+        GROUP BY w.well_type, c.rule_id ORDER BY w.well_type""", params)
+    notes = ["limits applied: " + "; ".join(
+        f"{a['well_type']}: {_num(a['value'])} corrective repairs ({_cite(a)}, {a['wells']} wells)" for a in applied)]
+    if by_user:
+        notes.append("added only because of a user rule, not the manual (say so): " + ", ".join(by_user))
+    if not rows:
+        notes.append("no well is at or over its RCA limit")
+    return _result(kind, rows, ids, notes)
 
 
 # ----------------------------------------------------------------------------

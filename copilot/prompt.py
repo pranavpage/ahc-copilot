@@ -26,8 +26,17 @@ RULES = """\
   not exist without calling it.
 - Pass areas by name or ID, as listed above. If a tool returns `notes`, read them: they report
   unknown values, missing rules and corrections.
-- "Last N weeks/months" ends today and starts N weeks/months before today (e.g. last 13 weeks =
-  today minus 91 days, through today). Never start later than that.
+- "Last N weeks/months" ends today and starts N weeks/months before today. Use the start dates
+  listed under Data for the usual periods; never start later than that.
+- If a tool's notes say records were left out, cancelled or corrected (e.g. a detection corrected as
+  rainwater), say so in the answer, with the record and note IDs and who made the change.
+- A list of several items (wells, spills, repairs, rule checks) goes in a table. Use the tool's
+  filters (e.g. `not_contained_only`, `reportable_only`, `sections`) so the table shows only the
+  rows that answer the question.
+- Rule questions: give each rule check with the status the tool gives (breach, open or met), what
+  is still open (open events, fines, due dates) and the IDs. Never call an open item closed.
+- Costs: take totals from `repair_costs`; never add numbers up yourself.
+- For "right now" answers, give the date and ID of the latest inspection and who did it.
 - Put the facts that answer the question in the text: the numbers, dates, names and IDs from the
   tool results (e.g. the temperatures, the totals per area, the dates of each event). The visual does
   not replace them.
@@ -74,6 +83,21 @@ your last message. The visual is shown with your answer. Never write a tool call
 "[Visual: ...]", images or links in the text."""
 
 
+# "Last N days/weeks/months" = today minus N, through today.
+PERIODS = [("last 7 days", "-7 days"), ("last 4 weeks", "-28 days"), ("last 30 days", "-30 days"),
+           ("last 3 months", "-3 months"), ("last 13 weeks", "-91 days"), ("last 90 days", "-90 days"),
+           ("last 4 months", "-4 months"), ("last 6 months", "-6 months"), ("last 12 months", "-12 months"),
+           ("last 4 years", "-4 years")]
+
+
+def periods(today: str) -> str:
+    """'last 7 days 2026-10-10; …; this year 2026-01-01' from today (SQLite date arithmetic)."""
+    starts = db.rows("SELECT " + ", ".join(f"date(:t, '{m}') AS p{i}" for i, (_, m) in enumerate(PERIODS)),
+                     {"t": today})[0]
+    out = [f"{name} {starts[f'p{i}']}" for i, (name, _) in enumerate(PERIODS)]
+    return "; ".join(out + [f"this year {today[:4]}-01-01"])
+
+
 def user_section(user_id: str | None) -> list[str]:
     """Who is talking: name, ID, role, team and areas. Says so if the user is unknown."""
     lines = ["## Who you are talking to"]
@@ -105,6 +129,7 @@ def user_section(user_id: str | None) -> list[str]:
 def build_system_prompt(user_id: str | None = None) -> str:
     """System prompt for the copilot: data lists from the DB, the user who is talking, then the
     rules and the visual table."""
+    today = db.today()
     areas = db.rows("SELECT area_id, name FROM areas ORDER BY name")
     well_types = db.rows("SELECT well_type, COUNT(*) AS n FROM wells GROUP BY well_type ORDER BY well_type")
     users = db.rows("SELECT user_id, name, role FROM users ORDER BY user_id")
@@ -115,7 +140,7 @@ def build_system_prompt(user_id: str | None = None) -> str:
         "operating manuals and SOPs.",
         "",
         "## Data",
-        f"- Today is {db.today()}.",
+        f"- Today is {today}. Periods ending today start on: " + periods(today) + ".",
         "- Areas: " + "; ".join(f"{a['name']} ({a['area_id']})" for a in areas) + ".",
         "- Well types: " + "; ".join(f"{t['well_type']} ({t['n']} wells)" for t in well_types)
         + ". Each type has its own manual and rules.",

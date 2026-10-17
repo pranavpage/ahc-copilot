@@ -65,7 +65,7 @@ def correction_details(correction_ids: list[str]) -> list[dict]:
     found = db.rows(
         """
         SELECT c.correction_id, c.source, c.target_id, c.field, c.original_value, c.corrected_value,
-               u.name AS corrected_by, c.reason, substr(c.created_at, 1, 10) AS date
+               u.name AS corrected_by, c.reason, substr(c.created_at, 1, 10) AS date, c.note_id
         FROM corrections c LEFT JOIN users u ON u.user_id = c.author_user_id
         WHERE c.correction_id IN (SELECT value FROM json_each(:ids))
         """,
