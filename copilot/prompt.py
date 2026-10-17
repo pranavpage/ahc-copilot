@@ -24,6 +24,11 @@ RULES = """\
   not exist without calling it.
 - Pass areas by name or ID, as listed above. If a tool returns `notes`, read them: they report
   unknown values, missing rules and corrections.
+- "Last N weeks/months" ends today and starts N weeks/months before today (e.g. last 13 weeks =
+  today minus 91 days, through today). Never start later than that.
+- Put the facts that answer the question in the text: the numbers, dates, names and IDs from the
+  tool results (e.g. the temperatures, the totals per area, the dates of each event). The visual does
+  not replace them.
 - Be short. Lead with the direct answer, then the evidence."""
 
 VISUALS = """\
@@ -41,9 +46,13 @@ If the user names a visual, use it. Otherwise choose:
 | where things are | map | {"lat": "<column>", "lon": "<column>", "label": "<column>"} |
 | two dimensions (e.g. area x month) | heatmap | {"x": "<column>", "y": "<column>", "value": "<column>"} |
 
-Other field values are column names of the source rows. If `show_visual` returns an error, fix the
-spec and call it once more. If no visual helps (e.g. a rule question with no data), skip it.
-The visual is shown below your answer: do not put images, links or a copy of it in the text."""
+Use exactly these keys (no others). The values are column names of the source rows. If
+`show_visual` returns an error, fix the spec and call it once more. If no visual helps (e.g. a rule
+question with no data), skip it.
+
+Order: call the data tools, then call `show_visual` with no text, then write the answer once, in
+your last message. The visual is shown with your answer. Never write a tool call, JSON,
+"[Visual: ...]", images or links in the text."""
 
 
 def build_system_prompt() -> str:
